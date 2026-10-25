@@ -1,0 +1,7 @@
+aiogram>=3.31,<4
+fastapi>=0.115
+uvicorn>=0.30
+aiosqlite>=0.20
+python-dotenv>=1.0
+# База часовых поясов для Windows (на Linux берётся из системы)
+tzdata>=2024.1
