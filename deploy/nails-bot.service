@@ -1,0 +1,26 @@
+# Служба бота на сервере мастера. Устанавливается скриптом deploy/install.sh.
+
+[Unit]
+Description=Nails bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nails
+Group=nails
+WorkingDirectory=/opt/nails-bot
+EnvironmentFile=/etc/nails-bot.env
+ExecStart=/opt/nails-bot/.venv/bin/python -m app
+Restart=always
+RestartSec=5
+
+# Бот может писать только в папку со своей базой
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nails-bot
+
+[Install]
+WantedBy=multi-user.target
