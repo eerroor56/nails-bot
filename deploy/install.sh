@@ -70,6 +70,12 @@ if [[ $SKIP_SYSTEM != 1 ]]; then
     apt-get install -y -q caddy
   fi
 
+  step "Проверяю связь с Telegram"
+  # С российских серверов api.telegram.org часто недоступен — тогда бот не получит ни одного сообщения
+  curl -sS -m 15 --retry 2 -o /dev/null https://api.telegram.org ||
+    die "сервер не может соединиться с api.telegram.org. Так бывает на серверах в России — нужен сервер за рубежом, например в Нидерландах"
+  echo "Telegram доступен."
+
   step "Создаю пользователя и ставлю зависимости Python"
   id nails >/dev/null 2>&1 || useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin nails
   python3 -m venv "$APP_DIR/.venv"

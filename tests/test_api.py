@@ -24,8 +24,13 @@ def test_requires_telegram_auth(client):
 def test_static_pages_served(client):
     index = client.get("/")
     assert index.status_code == 200
-    assert "telegram-web-app.js" in index.text
-    assert client.get("/admin.html").status_code == 200
+    # Скрипт Telegram отдаётся с нашего сервера: telegram.org в России часто недоступен
+    assert '<script src="js/telegram-web-app.js">' in index.text
+    assert '<script src="https://telegram.org' not in index.text
+    script = client.get("/js/telegram-web-app.js")
+    assert script.status_code == 200
+    assert "Telegram" in script.text
+    assert '<script src="js/telegram-web-app.js">' in client.get("/admin.html").text
     assert client.get("/js/app.js").headers["Cache-Control"] == "no-cache"
 
 
