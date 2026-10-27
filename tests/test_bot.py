@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import GetMe, SendMessage, SetChatMenuButton
+from aiogram.methods import DeleteMessage, GetMe, SendMessage, SetChatMenuButton
 from aiogram.types import Chat, Contact, Message, Update, User
 
 from app.bot import build_dispatcher, setup_bot
@@ -44,6 +44,9 @@ class MockedSession(BaseSession):
     def sent(self) -> list[SendMessage]:
         return [r for r in self.requests if isinstance(r, SendMessage)]
 
+    def deleted(self) -> list[int]:
+        return [r.message_id for r in self.requests if isinstance(r, DeleteMessage)]
+
 
 @pytest.fixture
 async def env():
@@ -61,14 +64,17 @@ async def env():
     await db.close()
 
 
-def message_update(user_id: int, text: str = None, contact: Contact = None) -> Update:
+def message_update(
+    user_id: int, text: str = None, contact: Contact = None, message_id: int = 1, chat_type: str = "private"
+) -> Update:
     user = User(id=user_id, is_bot=False, first_name="Анна", username="anna")
+    chat_id = user_id if chat_type == "private" else -1001
     return Update(
         update_id=1,
         message=Message(
-            message_id=1,
+            message_id=message_id,
             date=datetime.now(),
-            chat=Chat(id=user_id, type="private"),
+            chat=Chat(id=chat_id, type=chat_type),
             from_user=user,
             text=text,
             contact=contact,
@@ -100,16 +106,44 @@ async def test_admin_command(env):
     assert allowed.reply_markup.inline_keyboard[0][0].web_app.url == "https://nails.example.com/admin.html"
 
 
-async def test_shared_contact_is_saved(env):
+async def test_shared_contact_is_saved_and_removed_from_chat(env):
     settings, db, bot, session, dp = env
     contact = Contact(phone_number="79991234567", first_name="Анна", user_id=CLIENT_ID)
-    await dp.feed_update(bot, message_update(CLIENT_ID, contact=contact))
+    await dp.feed_update(bot, message_update(CLIENT_ID, contact=contact, message_id=7))
     assert (await db.get_user(CLIENT_ID))["phone"] == "+79991234567"
+    assert session.deleted() == [7]
+    assert session.sent() == []  # клиент в этот момент в Mini App — подсказка не нужна
 
-    # чужой контакт не сохраняем
+    # чужой контакт не сохраняем: удаляем и показываем подсказку, как для любого сообщения
     foreign = Contact(phone_number="70000000000", first_name="Кто-то", user_id=999)
-    await dp.feed_update(bot, message_update(OTHER_ID, contact=foreign))
+    await dp.feed_update(bot, message_update(OTHER_ID, contact=foreign, message_id=8))
     assert await db.get_user(OTHER_ID) is None
+    assert session.deleted() == [7, 8]
+    assert "не доходят до мастера" in session.sent()[-1].text
+
+
+async def test_other_messages_are_deleted_with_one_hint(env):
+    settings, db, bot, session, dp = env
+    await dp.feed_update(bot, message_update(CLIENT_ID, "Здравствуйте, можно на завтра?", message_id=10))
+
+    assert session.deleted() == [10]
+    [hint] = session.sent()
+    assert "не доходят до мастера" in hint.text
+    assert hint.reply_markup.inline_keyboard[0][0].web_app.url == "https://nails.example.com"
+    first_hint_id = len(session.requests)  # MockedSession выдаёт id = номер запроса
+
+    # следующее сообщение: прежняя подсказка удаляется, в чате остаётся одна новая
+    await dp.feed_update(bot, message_update(CLIENT_ID, "/unknown", message_id=11))
+    assert session.deleted() == [10, 11, first_hint_id]
+    assert len(session.sent()) == 2
+
+
+async def test_commands_and_group_messages_are_not_deleted(env):
+    settings, db, bot, session, dp = env
+    await dp.feed_update(bot, message_update(CLIENT_ID, "/start"))
+    await dp.feed_update(bot, message_update(CLIENT_ID, "привет всем", chat_type="supergroup"))
+    assert session.deleted() == []
+    assert len(session.sent()) == 1  # только ответ на /start
 
 
 async def test_setup_bot_sets_menu_button(env):
