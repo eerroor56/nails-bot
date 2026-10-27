@@ -347,16 +347,17 @@
           'label',
           { class: 'field', for: 'svc-price' },
           h('span', { class: 'field-label' }, `Цена, ${window.App.currency}`),
+          // type="text": у type="number" браузер рисует стрелки-счётчик и меняет цену колесом мыши
           h('input', {
             class: 'input',
             id: 'svc-price',
-            type: 'number',
+            type: 'text',
             inputmode: 'numeric',
-            min: '0',
-            step: '50',
+            autocomplete: 'off',
+            maxlength: '7',
             placeholder: '2000',
             value: form.price,
-            onInput: bind('price'),
+            onInput: bind('price', (t) => (t.value = t.value.replace(/\D/g, ''))),
           })
         ),
         h(

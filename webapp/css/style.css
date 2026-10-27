@@ -18,7 +18,9 @@
   --success: #34c759;
   --radius: 12px;
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
-  color-scheme: light dark;
+  /* Схема — по теме Telegram, а не системы: иначе при тёмном Telegram на светлой Windows
+     выпадающие списки, календарь и часы рисуются светлыми */
+  color-scheme: var(--tg-color-scheme, light dark);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -495,6 +497,12 @@ textarea.input {
 select.input {
   appearance: none;
   -webkit-appearance: none;
+}
+
+/* Пункты раскрытого списка: без явных цветов текст темы оказывается на белом фоне */
+select.input option {
+  background-color: var(--card);
+  color: var(--text);
 }
 
 .field.invalid .field-label {
