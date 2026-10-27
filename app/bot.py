@@ -49,7 +49,7 @@ async def cmd_start(message: Message, settings: Settings, db: Database) -> None:
     name = user.first_name if user else ""
     text = (
         f"Здравствуйте{', ' + name if name else ''}! 💅\n\n"
-        f"Это онлайн-запись в «{settings.salon_name}». Выберите услугу, удобные дату и время — "
+        "Это онлайн-запись к мастеру. Выберите услугу, удобные дату и время — "
         "и запись готова за минуту.\n\n"
         f"Нажмите «{OPEN_APP_TEXT}», чтобы начать."
     )

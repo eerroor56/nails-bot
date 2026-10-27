@@ -88,7 +88,7 @@ async def test_start_shows_open_app_button(env):
 
     [answer] = session.sent()
     assert "Здравствуйте, Анна!" in answer.text
-    assert "Тестовая студия" in answer.text
+    assert "онлайн-запись к мастеру" in answer.text
     button = answer.reply_markup.inline_keyboard[0][0]
     assert "Открыть запись" in button.text
     assert button.web_app.url == "https://nails.example.com"
