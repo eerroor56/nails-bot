@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const { h, cls, api, mainButton, backButton, alertBox, confirmBox, haptic, toast, fmt, openTelegramLink } =
+  const { h, cls, api, mainButton, backButton, alertBox, confirmBox, haptic, toast, picker, fmt, openTelegramLink } =
     window.App;
   const root = document.getElementById('app');
   const fromClient = new URLSearchParams(window.location.search).get('from') === 'client';
@@ -360,16 +360,13 @@
             onInput: bind('price', (t) => (t.value = t.value.replace(/\D/g, ''))),
           })
         ),
-        h(
-          'label',
-          { class: 'field', for: 'svc-duration' },
-          h('span', { class: 'field-label' }, 'Длительность'),
-          h(
-            'select',
-            { class: 'input', id: 'svc-duration', value: String(form.duration_min), onChange: bind('duration_min', (t) => Number(t.value)) },
-            durations.map((m) => h('option', { value: String(m) }, fmt.duration(m)))
-          )
-        )
+        picker({
+          id: 'svc-duration',
+          label: 'Длительность',
+          value: form.duration_min,
+          options: durations.map((m) => [m, fmt.duration(m)]),
+          onChange: (m) => (form.duration_min = m),
+        })
       ),
       h(
         'div',
@@ -496,38 +493,20 @@
       h(
         'div',
         { class: 'card' },
-        h(
-          'label',
-          { class: 'field', for: 'horizon' },
-          h('span', { class: 'field-label' }, 'Открыть запись вперёд на'),
-          h(
-            'select',
-            {
-              class: 'input',
-              id: 'horizon',
-              value: String(schedule.horizon_days),
-              onChange: (e) => (schedule.horizon_days = Number(e.target.value)),
-            },
-            withCurrent(HORIZONS, schedule.horizon_days).map((d) =>
-              h('option', { value: String(d) }, `${d} ${fmt.plural(d, 'день', 'дня', 'дней')}`)
-            )
-          )
-        ),
-        h(
-          'label',
-          { class: 'field', for: 'lead' },
-          h('span', { class: 'field-label' }, 'Записываться не позднее чем за'),
-          h(
-            'select',
-            {
-              class: 'input',
-              id: 'lead',
-              value: String(schedule.min_lead_minutes),
-              onChange: (e) => (schedule.min_lead_minutes = Number(e.target.value)),
-            },
-            withCurrentPairs(LEADS, schedule.min_lead_minutes).map(([m, label]) => h('option', { value: String(m) }, label))
-          )
-        )
+        picker({
+          id: 'horizon',
+          label: 'Открыть запись вперёд на',
+          value: schedule.horizon_days,
+          options: withCurrent(HORIZONS, schedule.horizon_days).map((d) => [d, `${d} ${fmt.plural(d, 'день', 'дня', 'дней')}`]),
+          onChange: (d) => (schedule.horizon_days = d),
+        }),
+        picker({
+          id: 'lead',
+          label: 'Записываться не позднее чем за',
+          value: schedule.min_lead_minutes,
+          options: withCurrentPairs(LEADS, schedule.min_lead_minutes),
+          onChange: (m) => (schedule.min_lead_minutes = m),
+        })
       ),
 
       h('div', { class: 'section-title' }, 'Выходные и отпуск'),

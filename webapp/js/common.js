@@ -176,6 +176,16 @@
         handler = null;
         if (native) tg.BackButton.hide();
       },
+      // Временно перехватить «Назад» (например, чтобы закрыть список); возвращает функцию отмены
+      override(fn) {
+        const previous = handler;
+        handler = fn;
+        if (native) tg.BackButton.show();
+        return () => {
+          handler = previous;
+          if (native && !previous) tg.BackButton.hide();
+        };
+      },
       // Кнопка «Назад» в разметке — только там, где нет нативной кнопки Telegram
       fallback() {
         if (native || !handler) return null;
@@ -224,6 +234,92 @@
     el.hidden = false;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => (el.hidden = true), 2600);
+  }
+
+  // ---------- выпадающий список ----------
+
+  // Замена <select>: системный список на Android и Windows рисуется по-своему и выбивается из оформления.
+  // options — пары [значение, подпись]; список открывается листом снизу в цветах темы Telegram.
+  function picker({ id, label, value, options, onChange }) {
+    let current = value;
+    const textOf = (v) => (options.find(([key]) => key === v) || [v, String(v)])[1];
+    const valueEl = h('span', { class: 'picker-value' }, textOf(current));
+    const button = h(
+      'button',
+      {
+        class: 'field picker',
+        type: 'button',
+        id,
+        'aria-haspopup': 'listbox',
+        onClick: () =>
+          openSheet(label, options, current, button, (v) => {
+            current = v;
+            valueEl.textContent = textOf(v);
+            onChange(v);
+          }),
+      },
+      h('span', { class: 'field-label' }, label),
+      valueEl
+    );
+    return button;
+  }
+
+  function openSheet(title, options, value, opener, onSelect) {
+    let closed = false;
+    const restoreBack = backButton.override(close);
+    const list = h(
+      'div',
+      { class: 'sheet-list', role: 'listbox', 'aria-label': title },
+      options.map(([key, text]) =>
+        h(
+          'button',
+          {
+            class: cls('row', 'sheet-option', key === value && 'selected'),
+            type: 'button',
+            role: 'option',
+            'aria-selected': String(key === value),
+            onClick: () => {
+              close();
+              if (key === value) return;
+              haptic.select();
+              onSelect(key);
+            },
+          },
+          h('span', { class: 'row-main' }, text),
+          key === value ? h('span', { class: 'sheet-check', 'aria-hidden': 'true' }, '✓') : null
+        )
+      )
+    );
+    const overlay = h(
+      'div',
+      { class: 'sheet-overlay', onClick: (e) => e.target === overlay && close() },
+      h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, h('div', { class: 'sheet-title' }, title), list)
+    );
+
+    function onKey(e) {
+      if (e.key === 'Escape') close();
+    }
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      restoreBack();
+      document.removeEventListener('keydown', onKey);
+      document.body.classList.remove('sheet-open');
+      overlay.classList.add('closing');
+      setTimeout(() => overlay.remove(), 180);
+      opener.focus({ preventScroll: true });
+    }
+
+    document.addEventListener('keydown', onKey);
+    document.body.classList.add('sheet-open');
+    document.body.appendChild(overlay);
+    // Выбранный пункт — по центру списка
+    const selected = list.querySelector('.selected') || list.firstChild;
+    if (selected) {
+      list.scrollTop = selected.offsetTop - (list.clientHeight - selected.offsetHeight) / 2;
+      selected.focus({ preventScroll: true });
+    }
   }
 
   // ---------- форматирование ----------
@@ -321,6 +417,7 @@
     confirmBox,
     haptic,
     toast,
+    picker,
     fmt,
     openTelegramLink,
     init,

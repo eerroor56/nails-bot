@@ -19,7 +19,7 @@
   --radius: 12px;
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
   /* Схема — по теме Telegram, а не системы: иначе при тёмном Telegram на светлой Windows
-     выпадающие списки, календарь и часы рисуются светлыми */
+     поля даты и времени рисуются светлыми */
   color-scheme: var(--tg-color-scheme, light dark);
 }
 
@@ -494,15 +494,36 @@ textarea.input {
   min-height: 60px;
 }
 
-select.input {
-  appearance: none;
-  -webkit-appearance: none;
+/* Поле-кнопка выпадающего списка (App.picker) */
+.picker {
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
 }
 
-/* Пункты раскрытого списка: без явных цветов текст темы оказывается на белом фоне */
-select.input option {
-  background-color: var(--card);
-  color: var(--text);
+.picker:active {
+  background: var(--separator);
+}
+
+.picker-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 17px;
+}
+
+.picker-value::after {
+  content: "";
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-right: 2px solid var(--hint);
+  border-bottom: 2px solid var(--hint);
+  transform: translateY(-3px) rotate(45deg);
 }
 
 .field.invalid .field-label {
@@ -774,6 +795,92 @@ select.input option {
 
 .cancelled .row-title {
   text-decoration: line-through;
+}
+
+/* ---------- лист снизу со списком вариантов ---------- */
+
+body.sheet-open {
+  overflow: hidden;
+}
+
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  animation: fade-in 0.18s ease-out;
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(var(--tg-viewport-height, 100vh) * 0.7);
+  padding-bottom: var(--safe-bottom);
+  border-radius: 16px 16px 0 0;
+  background: var(--card);
+  animation: sheet-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.sheet-title {
+  flex-shrink: 0;
+  padding: 16px 16px 12px;
+  border-bottom: 0.5px solid var(--separator);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.sheet-list {
+  position: relative;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sheet-option.selected {
+  color: var(--accent-fg);
+  font-weight: 500;
+}
+
+.sheet-check {
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+.sheet-overlay.closing {
+  animation: fade-out 0.18s ease-in forwards;
+}
+
+.sheet-overlay.closing .sheet {
+  animation: sheet-out 0.18s ease-in forwards;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes sheet-out {
+  to {
+    transform: translateY(100%);
+  }
 }
 
 /* ---------- запасная кнопка вне Telegram ---------- */
