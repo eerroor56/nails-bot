@@ -8,6 +8,7 @@ venv/
 
 # Секреты и данные
 .env
+masters.txt
 data/
 *.db
 *.db-shm
