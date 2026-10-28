@@ -39,7 +39,7 @@ fi
 domain=$1
 token=$2
 admin_id=$3
-salon=${4:-Маникюр}
+salon=${4:-Запись к мастеру}
 timezone=${TIMEZONE:-Europe/Moscow}
 
 [[ $SKIP_SYSTEM == 1 || $EUID -eq 0 ]] || die "запустите скрипт через sudo"

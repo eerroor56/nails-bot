@@ -88,7 +88,7 @@ def create_app(
                 await tg_bot.session.close()
             await db.close()
 
-    app = FastAPI(title="Nails booking", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app = FastAPI(title="Booking bot", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.settings = settings
     app.state.clock = clock or (lambda: datetime.now(settings.tz))
     app.state.booking_lock = asyncio.Lock()

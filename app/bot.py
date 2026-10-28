@@ -48,14 +48,14 @@ async def cmd_start(message: Message, settings: Settings, db: Database) -> None:
         )
     name = user.first_name if user else ""
     text = (
-        f"Здравствуйте{', ' + name if name else ''}! 💅\n\n"
+        f"Здравствуйте{', ' + name if name else ''}! ✨\n\n"
         "Это онлайн-запись к мастеру. Выберите услугу, удобные дату и время — "
         "и запись готова за минуту.\n\n"
         f"Нажмите «{OPEN_APP_TEXT}», чтобы начать."
     )
     keyboard = None
     if message.chat.type == ChatType.PRIVATE:
-        keyboard = webapp_keyboard(f"💅 {OPEN_APP_TEXT}", settings.webapp_url)
+        keyboard = webapp_keyboard(f"📅 {OPEN_APP_TEXT}", settings.webapp_url)
     await message.answer(text, reply_markup=keyboard)
 
 
@@ -89,7 +89,7 @@ async def on_other_message(message: Message, bot: Bot, settings: Settings, hints
     previous = hints.pop(message.chat.id, None)
     if previous:
         await delete_quietly(bot, message.chat.id, previous)
-    hint = await message.answer(HINT_TEXT, reply_markup=webapp_keyboard(f"💅 {OPEN_APP_TEXT}", settings.webapp_url))
+    hint = await message.answer(HINT_TEXT, reply_markup=webapp_keyboard(f"📅 {OPEN_APP_TEXT}", settings.webapp_url))
     hints[message.chat.id] = hint.message_id
 
 
@@ -139,7 +139,7 @@ async def setup_bot(bot: Bot, settings: Settings) -> None:
             )
         else:
             log.warning("WEBAPP_URL должен начинаться с https:// — кнопка меню не установлена")
-        base_commands = [BotCommand(command="start", description="Записаться на маникюр")]
+        base_commands = [BotCommand(command="start", description="Записаться к мастеру")]
         await bot.set_my_commands(base_commands, scope=BotCommandScopeDefault())
         admin_commands = base_commands + [
             BotCommand(command="admin", description="Админ-панель мастера"),

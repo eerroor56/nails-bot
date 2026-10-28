@@ -319,7 +319,7 @@
             class: 'input',
             id: 'svc-name',
             maxlength: '100',
-            placeholder: 'Например, маникюр с покрытием',
+            placeholder: 'Например, маникюр или коррекция бровей',
             value: form.name,
             onInput: bind('name'),
           })

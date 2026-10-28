@@ -39,7 +39,7 @@ class Settings:
     # Разрешает открывать приложение в обычном браузере без Telegram (только для разработки!)
     dev_mode: bool = False
     dev_user_id: int = 1
-    salon_name: str = "Маникюр"
+    salon_name: str = "Запись к мастеру"
     currency: str = "₽"
     # Сколько секунд считать initData действительной
     init_data_ttl: int = 24 * 60 * 60

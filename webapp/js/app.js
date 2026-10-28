@@ -146,7 +146,7 @@
       h(
         'div',
         { class: 'hero' },
-        h('div', { class: 'hero-icon' }, '💅'),
+        h('div', { class: 'hero-icon' }, '✨'),
         h('h1', null, me.first_name ? `Здравствуйте, ${me.first_name}!` : 'Здравствуйте!'),
         h(
           'p',
@@ -157,7 +157,7 @@
       h(
         'div',
         { class: 'features' },
-        h('div', { class: 'feature' }, h('b', null, '💅'), 'Услуга'),
+        h('div', { class: 'feature' }, h('b', null, '✨'), 'Услуга'),
         h('div', { class: 'feature' }, h('b', null, '🗓'), 'Дата и время'),
         h('div', { class: 'feature' }, h('b', null, '✅'), 'Готово')
       ),
