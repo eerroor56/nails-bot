@@ -7,7 +7,7 @@ from typing import Any
 
 import aiosqlite
 
-from .scheduling import ScheduleSettings, fmt_hhmm
+from .scheduling import DaySchedule, ScheduleSettings, fmt_hhmm, parse_hhmm
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS services (
@@ -52,8 +52,12 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS days_off (
-    date TEXT PRIMARY KEY
+-- Дни, настроенные в календаре мастера: свои часы работы или выходной вместо обычной недели
+CREATE TABLE IF NOT EXISTS special_days (
+    date      TEXT    PRIMARY KEY,
+    enabled   INTEGER NOT NULL,     -- 0 — выходной
+    start_min INTEGER NOT NULL,
+    end_min   INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -96,7 +100,18 @@ class Database:
         if str(self.path) != ":memory:":
             await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.executescript(SCHEMA)
+        await self._migrate_days_off()
         await self._conn.commit()
+
+    async def _migrate_days_off(self) -> None:
+        # Раньше выходные по датам хранились в отдельной таблице days_off
+        async with self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'days_off'") as cur:
+            if await cur.fetchone() is None:
+                return
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO special_days(date, enabled, start_min, end_min) SELECT date, 0, 600, 1200 FROM days_off"
+        )
+        await self.conn.execute("DROP TABLE days_off")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -120,19 +135,32 @@ class Database:
         )
         await self.conn.commit()
 
-    async def list_days_off(self, from_date: date | None = None) -> list[str]:
-        query, params = "SELECT date FROM days_off", ()
-        if from_date:
-            query, params = query + " WHERE date >= ?", (from_date.isoformat(),)
+    async def list_special_days(self, date_from: date, date_to: date | None = None) -> dict[str, DaySchedule]:
+        query, params = "SELECT * FROM special_days WHERE date >= ?", [date_from.isoformat()]
+        if date_to is not None:
+            query += " AND date <= ?"
+            params.append(date_to.isoformat())
         async with self.conn.execute(query + " ORDER BY date", params) as cur:
-            return [row["date"] for row in await cur.fetchall()]
+            return {
+                row["date"]: DaySchedule(
+                    enabled=bool(row["enabled"]), start=fmt_hhmm(row["start_min"]), end=fmt_hhmm(row["end_min"])
+                )
+                for row in await cur.fetchall()
+            }
 
-    async def add_day_off(self, day: date) -> None:
-        await self.conn.execute("INSERT OR IGNORE INTO days_off(date) VALUES (?)", (day.isoformat(),))
-        await self.conn.commit()
-
-    async def remove_day_off(self, day: date) -> None:
-        await self.conn.execute("DELETE FROM days_off WHERE date = ?", (day.isoformat(),))
+    async def set_special_days(self, days: list[date], schedule: DaySchedule | None) -> None:
+        """Свои часы или выходной на эти даты; None — вернуть им обычную неделю."""
+        keys = [day.isoformat() for day in days]
+        if schedule is None:
+            await self.conn.executemany("DELETE FROM special_days WHERE date = ?", [(key,) for key in keys])
+        else:
+            start, end = parse_hhmm(schedule.start), parse_hhmm(schedule.end)
+            await self.conn.executemany(
+                "INSERT INTO special_days(date, enabled, start_min, end_min) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(date) DO UPDATE SET "
+                "enabled = excluded.enabled, start_min = excluded.start_min, end_min = excluded.end_min",
+                [(key, int(schedule.enabled), start, end) for key in keys],
+            )
         await self.conn.commit()
 
     # ---------- услуги ----------
@@ -281,6 +309,13 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         return await self._attach_services(rows)
+
+    async def count_bookings_by_date(self, from_date: date) -> dict[str, int]:
+        async with self.conn.execute(
+            "SELECT date, COUNT(*) AS n FROM bookings WHERE status = 'active' AND date >= ? GROUP BY date",
+            (from_date.isoformat(),),
+        ) as cur:
+            return {row["date"]: row["n"] for row in await cur.fetchall()}
 
     async def count_active_bookings(self, user_id: int, from_date: date) -> int:
         async with self.conn.execute(

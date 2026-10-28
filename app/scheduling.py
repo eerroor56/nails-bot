@@ -49,10 +49,9 @@ class ScheduleSettings(BaseModel):
         return value
 
 
-def working_hours(day: date, settings: ScheduleSettings, days_off: set[str]) -> tuple[int, int] | None:
-    if day.isoformat() in days_off:
-        return None
-    sched = settings.week[day.weekday()]
+def working_hours(day: date, settings: ScheduleSettings, special: dict[str, DaySchedule]) -> tuple[int, int] | None:
+    # День, настроенный в календаре, важнее обычной недели
+    sched = special.get(day.isoformat(), settings.week[day.weekday()])
     if not sched.enabled:
         return None
     return parse_hhmm(sched.start), parse_hhmm(sched.end)
@@ -97,7 +96,7 @@ def free_slots(
 def day_slots(
     day: date,
     settings: ScheduleSettings,
-    days_off: set[str],
+    special: dict[str, DaySchedule],
     busy: list[tuple[int, int]],
     duration: int,
     now: datetime,
@@ -105,7 +104,7 @@ def day_slots(
     first, last = bookable_range(settings, now)
     if not first <= day <= last:
         return []
-    hours = working_hours(day, settings, days_off)
+    hours = working_hours(day, settings, special)
     if hours is None:
         return []
     return free_slots(hours, settings.slot_step, duration, busy, earliest_minute(day, settings, now))

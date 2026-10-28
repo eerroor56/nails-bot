@@ -9,7 +9,10 @@
 
   const DURATIONS = [];
   for (let m = 15; m <= 480; m += 15) DURATIONS.push(m);
-  const HORIZONS = [7, 14, 21, 30, 45, 60, 90];
+  const HORIZONS = [7, 14, 21, 30, 45, 60, 90, 120, 180, 365];
+  // На сколько дней вперёд можно менять дни в календаре — как SPECIAL_DAYS_AHEAD на сервере
+  const SPECIAL_DAYS_AHEAD = 365;
+  const WEEKDAY_NAMES = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
   const LEADS = [
     [0, 'Без ограничений'],
     [30, '30 минут'],
@@ -21,15 +24,20 @@
   ];
 
   const state = {
-    view: 'loading', // loading | denied | error | tabs | service-form
+    view: 'loading', // loading | denied | error | tabs | service-form | week
     error: '',
     tab: 'bookings',
     scope: 'upcoming',
     bookings: null,
     services: null,
-    schedule: null, // черновик графика
-    daysOff: [],
-    newDayOff: '',
+    schedule: null, // сохранённые обычная неделя и правила записи
+    special: {}, // дата → свои часы или выходной, заданные в календаре
+    booked: {}, // дата → сколько на неё активных записей
+    today: '', // сегодня по часовому поясу мастера
+    calMonth: '', // месяц в календаре графика, 'YYYY-MM'
+    picked: [], // выбранные в календаре даты
+    dayDraft: null, // часы для выбранных дат
+    week: null, // черновик обычной недели на её экране
     form: null, // редактируемая услуга
     saving: false,
   };
@@ -38,10 +46,18 @@
 
   function render(scrollTop) {
     if (state.view === 'service-form') backButton.show(closeForm);
+    else if (state.view === 'week') backButton.show(closeWeek);
     else if (fromClient) backButton.show(() => (window.location.href = 'index.html'));
     else backButton.hide();
 
-    const views = { loading: viewLoading, denied: viewDenied, error: viewError, tabs: viewTabs, 'service-form': viewServiceForm };
+    const views = {
+      loading: viewLoading,
+      denied: viewDenied,
+      error: viewError,
+      tabs: viewTabs,
+      'service-form': viewServiceForm,
+      week: viewWeek,
+    };
     root.replaceChildren(h('div', { class: cls('screen', scrollTop && 'enter') }, backButton.fallback(), views[state.view]()));
     if (scrollTop) window.scrollTo(0, 0);
   }
@@ -446,19 +462,381 @@
     }
   }
 
-  // ---------- график ----------
+  // ---------- график: календарь ----------
 
   function tabSchedule() {
-    if (state.schedule === null) {
-      // Не прячем кнопку на время загрузки: Telegram для Android после быстрых hide → show
-      // показывает текст предыдущей вкладки («Добавить услугу» на графике и наоборот)
-      mainButton.show('Сохранить график', saveSchedule, { enabled: false });
-      return spinner();
-    }
-    mainButton.show('Сохранить график', saveSchedule);
+    // Кнопка видна и пока график загружается, и без выбранных дней — только неактивная: Telegram для Android
+    // после быстрых hide → show показывает текст предыдущей вкладки
+    mainButton.show('Сохранить', saveDays, { enabled: state.picked.length > 0 });
+    if (state.schedule === null) return spinner();
     const schedule = state.schedule;
 
     return [
+      h('div', { class: 'section-title' }, 'Календарь'),
+      scheduleCalendar(),
+      state.picked.length
+        ? dayEditor()
+        : h(
+            'p',
+            { class: 'section-note' },
+            'Нажмите на день, чтобы изменить часы работы или сделать его выходным. Можно выбрать сразу несколько дней — ' +
+              `например, весь отпуск. Клиенты могут записаться до ${fmt.date(horizonEnd(), { weekday: false })} включительно, дни после — бледные.`
+          ),
+
+      h('div', { class: 'section-title' }, 'Обычная неделя'),
+      h(
+        'div',
+        { class: 'card' },
+        h(
+          'button',
+          { class: 'row', type: 'button', onClick: openWeek },
+          h(
+            'div',
+            { class: 'row-main' },
+            h('div', { class: 'row-title' }, weekSummary(schedule.week)),
+            h('div', { class: 'row-sub' }, rulesSummary(schedule))
+          ),
+          h('span', { class: 'row-value hint' }, '›')
+        )
+      ),
+      h('p', { class: 'section-note' }, 'Повторяется каждую неделю. Дни, изменённые в календаре, важнее неё.'),
+    ];
+  }
+
+  function addDays(iso, days) {
+    const d = fmt.parseDate(iso);
+    d.setDate(d.getDate() + days);
+    return fmt.isoDate(d);
+  }
+
+  function lastEditableDay() {
+    return addDays(state.today, SPECIAL_DAYS_AHEAD);
+  }
+
+  function horizonEnd() {
+    return addDays(state.today, state.schedule.horizon_days - 1);
+  }
+
+  function weekDay(iso) {
+    return state.schedule.week[fmt.weekdayIndex(fmt.parseDate(iso))];
+  }
+
+  // Часы дня: из календаря, если день меняли, иначе из обычной недели
+  function daySchedule(iso) {
+    return state.special[iso] || weekDay(iso);
+  }
+
+  function hoursText(day) {
+    return day.enabled ? `${day.start}–${day.end}` : 'выходной';
+  }
+
+  function scheduleCalendar() {
+    const month = state.calMonth;
+    const [year, mon] = month.split('-').map(Number);
+    const daysInMonth = new Date(year, mon, 0).getDate();
+    const last = lastEditableDay();
+    const closedAfter = horizonEnd();
+
+    const cells = [];
+    for (let i = 0; i < fmt.weekdayIndex(new Date(year, mon - 1, 1)); i++) cells.push(h('div'));
+    for (let day = 1; day <= daysInMonth; day++) {
+      const iso = `${month}-${String(day).padStart(2, '0')}`;
+      const editable = iso >= state.today && iso <= last;
+      const sched = daySchedule(iso);
+      const booked = state.booked[iso] || 0;
+      const picked = state.picked.includes(iso);
+      cells.push(
+        h(
+          'button',
+          {
+            class: cls(
+              'cal-day',
+              editable && (sched.enabled ? 'work' : 'off'),
+              editable && iso in state.special && 'special',
+              editable && iso > closedAfter && 'closed',
+              picked && 'selected',
+              iso === state.today && 'today'
+            ),
+            type: 'button',
+            disabled: !editable,
+            'aria-pressed': String(picked),
+            'aria-label': `${fmt.date(iso)}: ${hoursText(sched)}${booked ? `, записей: ${booked}` : ''}`,
+            onClick: () => togglePick(iso),
+          },
+          day,
+          booked && editable ? h('span', { class: 'cal-badge', 'aria-hidden': 'true' }, booked) : null
+        )
+      );
+    }
+
+    const nav = (delta, label, symbol, disabled) =>
+      h(
+        'button',
+        {
+          class: 'cal-nav',
+          type: 'button',
+          'aria-label': label,
+          disabled,
+          onClick: () => {
+            state.calMonth = fmt.shiftMonth(month, delta);
+            render();
+          },
+        },
+        symbol
+      );
+
+    return h(
+      'div',
+      { class: 'card calendar' },
+      h(
+        'div',
+        { class: 'cal-head' },
+        nav(-1, 'Предыдущий месяц', '‹', month <= state.today.slice(0, 7)),
+        h('div', { class: 'cal-title' }, `${fmt.MONTHS[mon - 1]} ${year}`),
+        nav(1, 'Следующий месяц', '›', month >= last.slice(0, 7))
+      ),
+      h('div', { class: 'cal-grid' }, fmt.WEEKDAYS.map((w) => h('div', { class: 'cal-wd' }, w)), cells),
+      h(
+        'div',
+        { class: 'cal-legend', 'aria-hidden': 'true' },
+        h('span', null, h('i', { class: 'legend-work' }), 'рабочий'),
+        h('span', null, h('i', { class: 'legend-off' }), 'выходной'),
+        h('span', null, h('i', { class: 'legend-special' }), 'изменён'),
+        h('span', null, h('i', { class: 'legend-booked' }, '1'), 'записи')
+      )
+    );
+  }
+
+  // Черновик часов для первого выбранного дня. У выходного часы берём из обычной недели —
+  // на случай, если его решат сделать рабочим
+  function draftFor(iso) {
+    const day = daySchedule(iso);
+    const usual = weekDay(iso);
+    return day.enabled || !usual.enabled ? { ...day } : { ...usual, enabled: false };
+  }
+
+  function togglePick(iso) {
+    haptic.select();
+    if (state.picked.includes(iso)) {
+      state.picked = state.picked.filter((d) => d !== iso);
+    } else {
+      if (!state.picked.length) state.dayDraft = draftFor(iso);
+      state.picked = [...state.picked, iso].sort();
+    }
+    if (!state.picked.length) state.dayDraft = null;
+    render();
+  }
+
+  function clearPicked() {
+    state.picked = [];
+    state.dayDraft = null;
+    render();
+  }
+
+  function timeInput(day, key, label) {
+    return h('input', {
+      type: 'time',
+      step: '300',
+      'aria-label': label,
+      value: day[key],
+      onChange: (e) => (day[key] = e.target.value),
+    });
+  }
+
+  function dayEditor() {
+    const picked = state.picked;
+    const draft = state.dayDraft;
+    const one = picked.length === 1;
+    const booked = picked.reduce((sum, d) => sum + (state.booked[d] || 0), 0);
+    const anySpecial = picked.some((d) => d in state.special);
+
+    const notes = [];
+    if (one) notes.push(`По обычной неделе: ${hoursText(weekDay(picked[0]))}.`);
+    if (booked) {
+      notes.push(
+        `На ${one ? 'этот день' : 'эти дни'} уже есть ${booked} ` +
+          `${fmt.plural(booked, 'запись', 'записи', 'записей')}. ` +
+          (booked === 1
+            ? 'Она не отменится сама — если нужно, отмените её во вкладке «Записи».'
+            : 'Они не отменятся сами — если нужно, отмените их во вкладке «Записи».')
+      );
+    }
+    if (picked.some((d) => d > horizonEnd())) {
+      const days = state.schedule.horizon_days;
+      notes.push(`Запись на ${one ? 'этот день' : 'эти дни'} откроется за ${days} ${fmt.plural(days, 'день', 'дня', 'дней')}.`);
+    }
+
+    return [
+      h(
+        'div',
+        { class: 'section-title' },
+        one ? fmt.date(picked[0]) : `Выбрано ${picked.length} ${fmt.plural(picked.length, 'день', 'дня', 'дней')}`
+      ),
+      h(
+        'div',
+        { class: 'card' },
+        h(
+          'div',
+          { class: 'card-pad' },
+          h(
+            'div',
+            { class: 'segmented' },
+            [
+              [true, 'Работаю'],
+              [false, 'Выходной'],
+            ].map(([enabled, label]) =>
+              h(
+                'button',
+                {
+                  class: cls(draft.enabled === enabled && 'active'),
+                  type: 'button',
+                  onClick: () => {
+                    if (draft.enabled === enabled) return;
+                    haptic.select();
+                    draft.enabled = enabled;
+                    render();
+                  },
+                },
+                label
+              )
+            )
+          )
+        ),
+        draft.enabled
+          ? h(
+              'div',
+              { class: 'row' },
+              h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, 'Часы')),
+              h(
+                'div',
+                { class: 'time-range' },
+                timeInput(draft, 'start', 'Начало работы'),
+                '–',
+                timeInput(draft, 'end', 'Конец работы')
+              )
+            )
+          : null,
+        h(
+          'div',
+          { class: 'editor-actions' },
+          anySpecial
+            ? h('button', { class: 'link-button', type: 'button', onClick: resetDays }, 'Как в обычной неделе')
+            : h('span'),
+          h('button', { class: 'link-button', type: 'button', onClick: clearPicked }, 'Снять выбор')
+        )
+      ),
+      notes.length ? h('p', { class: 'section-note' }, notes.join(' ')) : null,
+    ];
+  }
+
+  async function loadSchedule() {
+    try {
+      const data = await api('api/admin/schedule');
+      state.today = data.today;
+      state.schedule = data.schedule;
+      state.special = data.special_days;
+      state.booked = data.booked;
+      if (!state.calMonth || state.calMonth < data.today.slice(0, 7)) state.calMonth = data.today.slice(0, 7);
+    } catch (e) {
+      toast(e.message);
+    }
+    render();
+  }
+
+  async function saveDays() {
+    if (state.saving || !state.picked.length) return;
+    const day = state.dayDraft;
+    if (day.enabled && (!day.start || !day.end || day.start >= day.end)) {
+      haptic.error();
+      return alertBox('Время начала работы должно быть раньше окончания');
+    }
+    const booked = state.picked.filter((d) => state.booked[d]);
+    if (!day.enabled && booked.length) {
+      const where = booked.length === 1 ? `На ${fmt.date(booked[0])}` : 'На выбранные дни';
+      const ok = await confirmBox(
+        `${where} уже есть записи. Они не отменятся сами — если нужно, отмените их во вкладке «Записи». Сделать выходным?`
+      );
+      if (!ok) return;
+    }
+    // У выходного часы не важны, но сервер ждёт их в формате ЧЧ:ММ
+    const body = day.enabled ? day : { ...day, start: day.start || '10:00', end: day.end || '20:00' };
+    await applyDays(body, 'Сохранено');
+  }
+
+  function resetDays() {
+    applyDays(null, 'Вернули обычную неделю');
+  }
+
+  async function applyDays(day, message) {
+    if (state.saving) return;
+    state.saving = true;
+    mainButton.progress(true);
+    try {
+      const data = await api('api/admin/special-days', { method: 'PUT', body: { dates: state.picked, day } });
+      state.special = data.special_days;
+      state.picked = [];
+      state.dayDraft = null;
+      haptic.success();
+      toast(message);
+    } catch (e) {
+      alertBox(e.message);
+    }
+    state.saving = false;
+    // До перерисовки: hideProgress() включает кнопку, а без выбранных дней она должна стать неактивной
+    mainButton.progress(false);
+    render();
+  }
+
+  // ---------- график: обычная неделя и правила записи ----------
+
+  function weekSummary(week) {
+    const parts = [];
+    for (let i = 0; i < 7; ) {
+      let j = i;
+      while (j < 6 && hoursText(week[j + 1]) === hoursText(week[i])) j++;
+      const days = i === j ? fmt.WEEKDAYS[i] : `${fmt.WEEKDAYS[i]}–${fmt.WEEKDAYS[j]}`;
+      parts.push(`${days} ${hoursText(week[i])}`);
+      i = j + 1;
+    }
+    return parts.join(', ');
+  }
+
+  function rulesSummary(schedule) {
+    const lead = LEADS.find(([m]) => m === schedule.min_lead_minutes);
+    const days = schedule.horizon_days;
+    return [
+      `Шаг ${schedule.slot_step === 60 ? '1 час' : '30 минут'}`,
+      `запись на ${days} ${fmt.plural(days, 'день', 'дня', 'дней')} вперёд`,
+      schedule.min_lead_minutes
+        ? `не позднее чем за ${lead ? lead[1] : fmt.duration(schedule.min_lead_minutes)}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  function openWeek() {
+    state.week = JSON.parse(JSON.stringify(state.schedule));
+    state.view = 'week';
+    render(true);
+  }
+
+  function closeWeek() {
+    state.week = null;
+    state.view = 'tabs';
+    render(true);
+  }
+
+  function viewWeek() {
+    mainButton.show('Сохранить', saveWeek);
+    const schedule = state.week;
+
+    return [
+      h('h1', { class: 'page-title' }, 'Обычная неделя'),
+      h('div', { class: 'section-title' }, 'Рабочие дни'),
+      h('div', { class: 'card' }, schedule.week.map(dayRow)),
+      h('p', { class: 'section-note' }, 'Если какой-то день отличается — поменяйте его в календаре на вкладке «График».'),
+
       h('div', { class: 'section-title' }, 'Шаг записи'),
       h(
         'div',
@@ -488,9 +866,6 @@
       ),
       h('p', { class: 'section-note' }, 'С каким интервалом клиентам предлагается время: 10:00, 10:30… или 10:00, 11:00…'),
 
-      h('div', { class: 'section-title' }, 'Рабочие дни'),
-      h('div', { class: 'card' }, schedule.week.map(dayRow)),
-
       h('div', { class: 'section-title' }, 'Правила записи'),
       h(
         'div',
@@ -510,34 +885,6 @@
           onChange: (m) => (schedule.min_lead_minutes = m),
         })
       ),
-
-      h('div', { class: 'section-title' }, 'Выходные и отпуск'),
-      h(
-        'div',
-        { class: 'card' },
-        h(
-          'div',
-          { class: 'inline-form' },
-          h('input', {
-            class: 'input',
-            type: 'date',
-            'aria-label': 'Дата выходного',
-            min: fmt.isoDate(new Date()),
-            value: state.newDayOff,
-            onInput: (e) => (state.newDayOff = e.target.value),
-          }),
-          h('button', { class: 'btn', type: 'button', onClick: addDayOff }, 'Добавить')
-        ),
-        state.daysOff.map((day) =>
-          h(
-            'div',
-            { class: 'row' },
-            h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, fmt.date(day, { year: true }))),
-            h('button', { class: 'link-button danger', type: 'button', onClick: () => removeDayOff(day) }, 'Удалить')
-          )
-        )
-      ),
-      h('p', { class: 'section-note' }, 'В эти дни запись закрыта. Уже существующие записи не отменяются автоматически.'),
     ];
   }
 
@@ -551,30 +898,23 @@
   }
 
   function dayRow(day, index) {
-    const names = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
-    const timeInput = (key, label) =>
-      h('input', {
-        type: 'time',
-        step: '300',
-        'aria-label': `${names[index]}: ${label}`,
-        value: day[key],
-        onChange: (e) => (day[key] = e.target.value),
-      });
     return h(
       'div',
       { class: 'row day-row' },
-      h('div', { class: 'row-title', title: names[index] }, fmt.WEEKDAYS[index]),
+      h('div', { class: 'row-title', title: WEEKDAY_NAMES[index] }, fmt.WEEKDAYS[index]),
       h(
         'div',
         { class: cls('time-range', !day.enabled && 'off') },
-        day.enabled ? [timeInput('start', 'начало'), '–', timeInput('end', 'конец')] : h('span', null, 'выходной')
+        day.enabled
+          ? [timeInput(day, 'start', `${WEEKDAY_NAMES[index]}: начало`), '–', timeInput(day, 'end', `${WEEKDAY_NAMES[index]}: конец`)]
+          : h('span', null, 'выходной')
       ),
       h(
         'span',
         { class: 'switch' },
         h('input', {
           type: 'checkbox',
-          'aria-label': `${names[index]}: рабочий день`,
+          'aria-label': `${WEEKDAY_NAMES[index]}: рабочий день`,
           checked: day.enabled,
           onChange: (e) => {
             haptic.select();
@@ -587,59 +927,29 @@
     );
   }
 
-  async function loadSchedule() {
-    try {
-      const data = await api('api/admin/schedule');
-      state.schedule = data.schedule;
-      state.daysOff = data.days_off;
-    } catch (e) {
-      toast(e.message);
-    }
-    render();
-  }
-
-  async function saveSchedule() {
+  async function saveWeek() {
     if (state.saving) return;
-    const invalid = state.schedule.week.findIndex((d) => d.enabled && (!d.start || !d.end || d.start >= d.end));
+    const invalid = state.week.week.findIndex((d) => d.enabled && (!d.start || !d.end || d.start >= d.end));
     if (invalid >= 0) {
       haptic.error();
       return alertBox(`${fmt.WEEKDAYS[invalid].toUpperCase()}: время начала должно быть раньше окончания`);
     }
     state.saving = true;
     mainButton.progress(true);
+    let saved = false;
     try {
-      state.schedule = await api('api/admin/schedule', { method: 'PUT', body: state.schedule });
-      haptic.success();
-      toast('График сохранён');
-      render();
-    } catch (e) {
-      alertBox(e.message);
-    } finally {
-      state.saving = false;
-      mainButton.progress(false);
-    }
-  }
-
-  async function addDayOff() {
-    if (!state.newDayOff) return toast('Выберите дату');
-    try {
-      const data = await api('api/admin/days-off', { method: 'POST', body: { date: state.newDayOff } });
-      state.daysOff = data.days_off;
-      state.newDayOff = '';
-      haptic.success();
-      render();
+      state.schedule = await api('api/admin/schedule', { method: 'PUT', body: state.week });
+      saved = true;
     } catch (e) {
       alertBox(e.message);
     }
-  }
-
-  async function removeDayOff(day) {
-    try {
-      const data = await api(`api/admin/days-off/${day}`, { method: 'DELETE' });
-      state.daysOff = data.days_off;
-      render();
-    } catch (e) {
-      alertBox(e.message);
+    state.saving = false;
+    // До перехода на календарь: там кнопка неактивна, пока не выбраны дни, а hideProgress() её включает
+    mainButton.progress(false);
+    if (saved) {
+      haptic.success();
+      toast('Обычная неделя сохранена');
+      closeWeek();
     }
   }
 
@@ -654,6 +964,8 @@
     if (tab === 'services' && state.services === null) loadServices();
     if (tab === 'schedule') {
       state.schedule = null;
+      state.picked = [];
+      state.dayDraft = null;
       loadSchedule();
     }
   }

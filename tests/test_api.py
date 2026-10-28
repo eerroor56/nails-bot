@@ -173,11 +173,14 @@ def test_admin_sees_and_cancels_bookings(client, services, fake_bot, admin_heade
     assert client.post(f"/api/admin/bookings/{booking['id']}/cancel", headers=admin_headers).status_code == 404
 
 
-def test_admin_schedule_and_days_off(client, services, admin_headers):
+def test_admin_schedule_and_special_days(client, services, admin_headers):
     headers = auth_headers(CLIENT_ID)
     ids = services[0]["id"]
 
-    schedule = client.get("/api/admin/schedule", headers=admin_headers).json()["schedule"]
+    data = client.get("/api/admin/schedule", headers=admin_headers).json()
+    assert data["today"] == "2026-10-26"
+    assert data["special_days"] == {}
+    schedule = data["schedule"]
     assert schedule["slot_step"] == 30
     schedule["slot_step"] = 60
     schedule["week"][1] = {"enabled": True, "start": "12:00", "end": "15:00"}  # вторник
@@ -190,15 +193,38 @@ def test_admin_schedule_and_days_off(client, services, admin_headers):
     schedule["week"][1] = {"enabled": True, "start": "15:00", "end": "12:00"}
     assert client.put("/api/admin/schedule", json=schedule, headers=admin_headers).status_code == 422
 
-    added = client.post("/api/admin/days-off", json={"date": "2026-10-27"}, headers=admin_headers)
-    assert added.json()["days_off"] == ["2026-10-27"]
+    def set_days(dates, day):
+        return client.put("/api/admin/special-days", json={"dates": dates, "day": day}, headers=admin_headers)
+
+    # Отпуск на два дня и рабочее воскресенье
+    off = {"enabled": False, "start": "10:00", "end": "20:00"}
+    assert set_days(["2026-10-27", "2026-10-28"], off).status_code == 200
+    sunday = set_days(["2026-11-01"], {"enabled": True, "start": "11:00", "end": "14:00"}).json()["special_days"]
+    assert sorted(sunday) == ["2026-10-27", "2026-10-28", "2026-11-01"]
+    assert sunday["2026-11-01"] == {"enabled": True, "start": "11:00", "end": "14:00"}
+
     calendar = client.get(f"/api/calendar?month=2026-10&services={ids}", headers=headers).json()
     assert "2026-10-27" not in calendar["days"]
-    assert "2026-10-28" in calendar["days"]
+    assert "2026-10-28" not in calendar["days"]
+    assert "2026-10-29" in calendar["days"]
+    slots = client.get(f"/api/slots?date=2026-11-01&services={ids}", headers=headers).json()["slots"]
+    assert slots == ["11:00", "12:00"]
 
-    assert client.post("/api/admin/days-off", json={"date": "2026-10-01"}, headers=admin_headers).status_code == 400
-    removed = client.delete("/api/admin/days-off/2026-10-27", headers=admin_headers)
-    assert removed.json()["days_off"] == []
+    # Вернуть обычную неделю
+    reset = set_days(["2026-10-28"], None).json()["special_days"]
+    assert sorted(reset) == ["2026-10-27", "2026-11-01"]
+    assert "2026-10-28" in client.get(f"/api/calendar?month=2026-10&services={ids}", headers=headers).json()["days"]
+
+    assert set_days(["2026-10-01"], off).status_code == 400  # прошлое
+    assert set_days(["2027-12-01"], off).status_code == 400  # дальше года
+    assert set_days(["2026-11-02"], {"enabled": True, "start": "15:00", "end": "12:00"}).status_code == 422
+    assert set_days([], off).status_code == 422
+
+
+def test_admin_schedule_counts_bookings(client, services, admin_headers):
+    assert book(client, services).status_code == 201
+    booked = client.get("/api/admin/schedule", headers=admin_headers).json()["booked"]
+    assert booked == {"2026-10-27": 1}
 
 
 def test_notifications_fall_back_to_admins(tmp_path, fake_bot):

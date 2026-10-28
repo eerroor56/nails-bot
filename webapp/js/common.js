@@ -366,6 +366,7 @@
       const d = fmt.parseDate(iso);
       let text = `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`;
       if (options.year) text += ` ${d.getFullYear()}`;
+      if (options.weekday === false) return text;
       return `${text}, ${WEEKDAYS[fmt.weekdayIndex(d)]}`;
     },
     relativeDate(iso) {

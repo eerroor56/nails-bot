@@ -41,24 +41,36 @@ def test_earliest_cuts_morning():
 
 def test_day_slots_respects_lead_time_today():
     settings = ScheduleSettings(min_lead_minutes=120)  # сейчас 09:00 → не раньше 11:00
-    slots = day_slots(NOW.date(), settings, set(), [], 60, NOW)
+    slots = day_slots(NOW.date(), settings, {}, [], 60, NOW)
     assert hhmm(slots)[0] == "11:00"
     assert hhmm(slots)[-1] == "19:00"
 
 
 def test_day_slots_day_off_weekend_and_horizon():
     settings = ScheduleSettings(horizon_days=7)
-    assert day_slots(date(2026, 11, 1), settings, set(), [], 60, NOW) == []  # воскресенье — выходной
-    assert day_slots(date(2026, 10, 27), settings, {"2026-10-27"}, [], 60, NOW) == []  # выходной по дате
-    assert day_slots(date(2026, 11, 3), settings, set(), [], 60, NOW) == []  # за пределами 7 дней
-    assert day_slots(date(2026, 10, 25), settings, set(), [], 60, NOW) == []  # прошлое
-    assert day_slots(date(2026, 10, 31), settings, set(), [], 60, NOW)  # суббота — рабочая
+    assert day_slots(date(2026, 11, 1), settings, {}, [], 60, NOW) == []  # воскресенье — выходной
+    day_off = {"2026-10-27": DaySchedule(enabled=False)}
+    assert day_slots(date(2026, 10, 27), settings, day_off, [], 60, NOW) == []  # выходной в календаре
+    assert day_slots(date(2026, 11, 3), settings, {}, [], 60, NOW) == []  # за пределами 7 дней
+    assert day_slots(date(2026, 10, 25), settings, {}, [], 60, NOW) == []  # прошлое
+    assert day_slots(date(2026, 10, 31), settings, {}, [], 60, NOW)  # суббота — рабочая
+
+
+def test_special_day_overrides_week():
+    settings = ScheduleSettings()
+    special = {
+        "2026-10-27": DaySchedule(start="14:00", end="16:00"),  # вторник — короткий день
+        "2026-11-01": DaySchedule(start="12:00", end="14:00"),  # воскресенье — по неделе выходной
+    }
+    assert hhmm(day_slots(date(2026, 10, 27), settings, special, [], 60, NOW)) == ["14:00", "14:30", "15:00"]
+    assert hhmm(day_slots(date(2026, 11, 1), settings, special, [], 60, NOW)) == ["12:00", "12:30", "13:00"]
+    assert hhmm(day_slots(date(2026, 10, 28), settings, special, [], 60, NOW))[0] == "10:00"  # обычная среда
 
 
 def test_lead_time_crossing_midnight():
     late = datetime(2026, 10, 26, 23, 30, tzinfo=NOW.tzinfo)
     settings = ScheduleSettings(min_lead_minutes=12 * 60)  # не раньше 11:30 следующего дня
-    slots = day_slots(date(2026, 10, 27), settings, set(), [], 30, late)
+    slots = day_slots(date(2026, 10, 27), settings, {}, [], 30, late)
     assert hhmm(slots)[0] == "11:30"
 
 

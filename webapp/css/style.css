@@ -16,6 +16,8 @@
   --destructive: var(--tg-theme-destructive-text-color, #e53935);
   --separator: var(--tg-theme-section-separator-color, rgba(60, 60, 67, 0.16));
   --success: #34c759;
+  /* Светлый оттенок кнопки — рабочие дни в календаре графика */
+  --accent-soft: rgba(36, 129, 204, 0.16);
   --radius: 12px;
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
   /* Схема — по теме Telegram, а не системы: иначе при тёмном Telegram на светлой Windows
@@ -34,6 +36,12 @@
     --accent-fg: var(--tg-theme-accent-text-color, var(--tg-theme-link-color, #3e88f7));
     --section-header: var(--tg-theme-section-header-text-color, #8d8e93);
     --separator: var(--tg-theme-section-separator-color, rgba(84, 84, 88, 0.6));
+  }
+}
+
+@supports (background: color-mix(in srgb, red 50%, transparent)) {
+  :root {
+    --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
   }
 }
 
@@ -426,6 +434,123 @@ button.row:active {
 
 .cal-day.selected::after {
   background: var(--accent-text);
+}
+
+/* Календарь графика в админ-панели: рабочие дни подкрашены, у изменённых — точка, у дней с записями — счётчик */
+
+.cal-day.work:not(.selected) {
+  background: var(--accent-soft);
+}
+
+.cal-day.off:not(.selected) {
+  color: var(--hint);
+}
+
+.cal-day.closed:not(.selected) {
+  opacity: 0.5;
+}
+
+.cal-day.special::after {
+  content: "";
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--accent-fg);
+}
+
+.cal-day.special.selected::after {
+  background: var(--accent-text);
+}
+
+.cal-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.cal-day.selected .cal-badge {
+  background: var(--accent-text);
+  color: var(--accent);
+}
+
+.cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
+  padding: 12px 4px 0;
+  color: var(--hint);
+  font-size: 13px;
+}
+
+.cal-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cal-legend i {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-style: normal;
+}
+
+.legend-work {
+  background: var(--accent-soft);
+}
+
+.legend-off {
+  box-shadow: inset 0 0 0 1px var(--separator);
+}
+
+.legend-special::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent-fg);
+}
+
+.legend-booked {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.editor-actions {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.editor-actions::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
 }
 
 .slots {
