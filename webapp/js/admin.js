@@ -15,6 +15,7 @@
   const MAX_BREAKS = 5;
   const STEPS = [15, 30, 45, 60];
   const WEEKDAYS_PLURAL = ['понедельники', 'вторники', 'среды', 'четверги', 'пятницы', 'субботы', 'воскресенья'];
+  const SINGLE_PICK_KEY = 'admin-single-pick';
   const LEADS = [
     [0, 'Без ограничений'],
     [30, '30 минут'],
@@ -38,6 +39,7 @@
     today: '', // сегодня по часовому поясу мастера
     calMonth: '', // месяц в календаре графика, 'YYYY-MM'
     picked: [], // выбранные в календаре даты
+    singlePick: storedSinglePick(), // нажатие на день заменяет выбор, а не добавляет к нему
     dayDraft: null, // часы и перерывы для выбранных дат
     rules: null, // черновик правил записи на их экране
     form: null, // редактируемая услуга
@@ -477,6 +479,26 @@
     return [
       h('div', { class: 'section-title' }, 'Календарь'),
       scheduleCalendar(),
+      h(
+        'div',
+        { class: 'card' },
+        h(
+          'label',
+          { class: 'row', for: 'single-pick' },
+          h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, 'Выбирать одну дату')),
+          h(
+            'span',
+            { class: 'switch' },
+            h('input', {
+              type: 'checkbox',
+              id: 'single-pick',
+              checked: state.singlePick,
+              onChange: (e) => setSinglePick(e.target.checked),
+            }),
+            h('span')
+          )
+        )
+      ),
       state.picked.length
         ? [dayEditor(), pickedBookings()]
         : [
@@ -484,7 +506,10 @@
               'p',
               { class: 'section-note' },
               'Нажмите на день, чтобы задать часы работы и перерывы или сделать его выходным, — ниже появятся и записи ' +
-                'на этот день. Можно выбрать несколько дней, а нажатие на «пн», «вт»… выберет все такие дни месяца.'
+                'на этот день.' +
+                (state.singlePick
+                  ? ''
+                  : ' Можно выбрать несколько дней, а нажатие на «пн», «вт»… выберет все такие дни месяца.')
             ),
             h(
               'p',
@@ -623,16 +648,18 @@
         'div',
         { class: 'cal-grid' },
         fmt.WEEKDAYS.map((w, i) =>
-          h(
-            'button',
-            {
-              class: 'cal-wd pick',
-              type: 'button',
-              'aria-label': `Выбрать все ${WEEKDAYS_PLURAL[i]} месяца`,
-              onClick: () => pickWeekday(i),
-            },
-            w
-          )
+          state.singlePick
+            ? h('div', { class: 'cal-wd' }, w)
+            : h(
+                'button',
+                {
+                  class: 'cal-wd pick',
+                  type: 'button',
+                  'aria-label': `Выбрать все ${WEEKDAYS_PLURAL[i]} месяца`,
+                  onClick: () => pickWeekday(i),
+                },
+                w
+              )
         ),
         cells
       ),
@@ -676,7 +703,32 @@
 
   function togglePick(iso) {
     haptic.select();
-    setPicked(state.picked.includes(iso) ? state.picked.filter((d) => d !== iso) : [...state.picked, iso]);
+    if (state.picked.includes(iso)) return setPicked(state.picked.filter((d) => d !== iso));
+    // По одной дате черновик часов берётся заново — с нового дня, а не с прошлого выбора
+    if (state.singlePick) state.picked = [];
+    setPicked([...state.picked, iso]);
+  }
+
+  // Выбор режима запоминается в браузере мастера; если хранилище недоступно, по умолчанию — несколько дат
+  function storedSinglePick() {
+    try {
+      return window.localStorage.getItem(SINGLE_PICK_KEY) === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setSinglePick(on) {
+    state.singlePick = on;
+    try {
+      window.localStorage.setItem(SINGLE_PICK_KEY, on ? '1' : '0');
+    } catch (e) {
+      // без хранилища режим просто не запомнится
+    }
+    haptic.select();
+    // Из нескольких выбранных дат остаётся первая — с неё и взят черновик часов
+    if (on && state.picked.length > 1) state.picked = state.picked.slice(0, 1);
+    render();
   }
 
   // «пн», «вт»… в шапке календаря: выбрать все такие дни месяца, а если они уже выбраны — снять выбор
