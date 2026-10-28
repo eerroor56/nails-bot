@@ -14,17 +14,15 @@ from .config import Settings
 from .db import Database
 from .notifications import Notifier
 from .scheduling import (
+    DAYS_AHEAD,
     TIME_PATTERN,
-    DaySchedule,
     ScheduleSettings,
+    WorkDay,
     bookable_range,
     day_slots,
     fmt_hhmm,
     parse_hhmm,
 )
-
-# На сколько дней вперёд мастер может настроить дни в календаре
-SPECIAL_DAYS_AHEAD = 365
 
 # ---------- зависимости ----------
 
@@ -116,10 +114,10 @@ class ServiceIn(BaseModel):
         return value.strip()
 
 
-class SpecialDaysIn(BaseModel):
-    dates: list[date] = Field(min_length=1, max_length=SPECIAL_DAYS_AHEAD + 1)
-    # None — вернуть этим дням часы обычной недели
-    day: DaySchedule | None
+class WorkDaysIn(BaseModel):
+    dates: list[date] = Field(min_length=1, max_length=DAYS_AHEAD + 1)
+    # None — выходной
+    day: WorkDay | None
 
 
 # ---------- вспомогательное ----------
@@ -144,9 +142,9 @@ async def resolve_services(db: Database, ids: list[int]) -> list[dict[str, Any]]
 
 async def slots_for_day(db: Database, day: date, duration: int, now: datetime) -> list[int]:
     schedule = await db.get_schedule()
-    special = await db.list_special_days(day, day)
+    work_days = await db.list_work_days(day, day)
     busy = await db.busy_intervals(day, day)
-    return day_slots(day, schedule, special, busy.get(day.isoformat(), []), duration, now)
+    return day_slots(day, schedule, work_days, busy.get(day.isoformat(), []), duration, now)
 
 
 def is_upcoming(booking: dict[str, Any], now: datetime) -> bool:
@@ -203,11 +201,11 @@ async def calendar(
     end = min(last, date(year, mon, monthrange(year, mon)[1]))
     days: dict[str, int] = {}
     if start <= end:
-        special = await db.list_special_days(start, end)
+        work_days = await db.list_work_days(start, end)
         busy = await db.busy_intervals(start, end)
         day = start
         while day <= end:
-            slots = day_slots(day, schedule, special, busy.get(day.isoformat(), []), duration, now)
+            slots = day_slots(day, schedule, work_days, busy.get(day.isoformat(), []), duration, now)
             if slots:
                 days[day.isoformat()] = len(slots)
             day += timedelta(days=1)
@@ -363,8 +361,8 @@ async def admin_delete_service(service_id: int, db: Database = Depends(get_db)) 
         raise HTTPException(404, "Услуга не найдена")
 
 
-async def special_days_json(db: Database, today: date) -> dict[str, Any]:
-    return {day: schedule.model_dump() for day, schedule in (await db.list_special_days(today)).items()}
+async def work_days_json(db: Database, today: date) -> dict[str, Any]:
+    return {day: work.model_dump() for day, work in (await db.list_work_days(today)).items()}
 
 
 @admin.get("/schedule")
@@ -373,8 +371,9 @@ async def admin_schedule(db: Database = Depends(get_db), now: datetime = Depends
     return {
         "today": today.isoformat(),
         "schedule": (await db.get_schedule()).model_dump(),
-        "special_days": await special_days_json(db, today),
-        "booked": await db.count_bookings_by_date(today),
+        "days": await work_days_json(db, today),
+        # Записи на дни календаря — их видно под календарём, если выбрать день
+        "bookings": await db.list_bookings(status="active", date_from=today),
     }
 
 
@@ -384,13 +383,13 @@ async def admin_save_schedule(payload: ScheduleSettings, db: Database = Depends(
     return payload.model_dump()
 
 
-@admin.put("/special-days")
-async def admin_set_special_days(
-    payload: SpecialDaysIn, db: Database = Depends(get_db), now: datetime = Depends(get_now)
+@admin.put("/days")
+async def admin_set_work_days(
+    payload: WorkDaysIn, db: Database = Depends(get_db), now: datetime = Depends(get_now)
 ) -> dict[str, Any]:
     today = now.date()
-    last = today + timedelta(days=SPECIAL_DAYS_AHEAD)
+    last = today + timedelta(days=DAYS_AHEAD)
     if any(not today <= day <= last for day in payload.dates):
         raise HTTPException(400, "Менять можно дни с сегодняшнего и на год вперёд")
-    await db.set_special_days(payload.dates, payload.day)
-    return {"special_days": await special_days_json(db, today)}
+    await db.set_work_days(payload.dates, payload.day)
+    return {"days": await work_days_json(db, today)}

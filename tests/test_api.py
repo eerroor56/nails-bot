@@ -173,58 +173,51 @@ def test_admin_sees_and_cancels_bookings(client, services, fake_bot, admin_heade
     assert client.post(f"/api/admin/bookings/{booking['id']}/cancel", headers=admin_headers).status_code == 404
 
 
-def test_admin_schedule_and_special_days(client, services, admin_headers):
+def test_admin_rules_and_work_days(client, services, admin_headers):
     headers = auth_headers(CLIENT_ID)
-    ids = services[0]["id"]
+    ids = services[0]["id"]  # 90 минут
 
     data = client.get("/api/admin/schedule", headers=admin_headers).json()
     assert data["today"] == "2026-10-26"
-    assert data["special_days"] == {}
+    assert data["days"]["2026-10-27"] == {"start": "10:00", "end": "20:00", "breaks": []}
+    assert "2026-11-01" not in data["days"]  # воскресенье — выходной
     schedule = data["schedule"]
-    assert schedule["slot_step"] == 30
+    assert schedule == {"slot_step": 30, "horizon_days": 30, "min_lead_minutes": 60}
     schedule["slot_step"] = 60
-    schedule["week"][1] = {"enabled": True, "start": "12:00", "end": "15:00"}  # вторник
-    saved = client.put("/api/admin/schedule", json=schedule, headers=admin_headers)
-    assert saved.status_code == 200
-
-    slots = client.get(f"/api/slots?date=2026-10-27&services={ids}", headers=headers).json()["slots"]
-    assert slots == ["12:00", "13:00"]  # 90 минут, шаг 1 час, до 15:00
-
-    schedule["week"][1] = {"enabled": True, "start": "15:00", "end": "12:00"}
-    assert client.put("/api/admin/schedule", json=schedule, headers=admin_headers).status_code == 422
+    assert client.put("/api/admin/schedule", json=schedule, headers=admin_headers).status_code == 200
+    assert client.put("/api/admin/schedule", json={**schedule, "slot_step": 20}, headers=admin_headers).status_code == 422
 
     def set_days(dates, day):
-        return client.put("/api/admin/special-days", json={"dates": dates, "day": day}, headers=admin_headers)
+        return client.put("/api/admin/days", json={"dates": dates, "day": day}, headers=admin_headers)
+
+    # Вторник: 10–15 с обедом 12–13
+    lunch = {"start": "10:00", "end": "15:00", "breaks": [{"start": "12:00", "end": "13:00"}]}
+    assert set_days(["2026-10-27"], lunch).json()["days"]["2026-10-27"] == lunch
+    slots = client.get(f"/api/slots?date=2026-10-27&services={ids}", headers=headers).json()["slots"]
+    assert slots == ["10:00", "13:00"]  # 90 минут, шаг 1 час, обед 12–13, до 15:00
 
     # Отпуск на два дня и рабочее воскресенье
-    off = {"enabled": False, "start": "10:00", "end": "20:00"}
-    assert set_days(["2026-10-27", "2026-10-28"], off).status_code == 200
-    sunday = set_days(["2026-11-01"], {"enabled": True, "start": "11:00", "end": "14:00"}).json()["special_days"]
-    assert sorted(sunday) == ["2026-10-27", "2026-10-28", "2026-11-01"]
-    assert sunday["2026-11-01"] == {"enabled": True, "start": "11:00", "end": "14:00"}
-
+    assert set_days(["2026-10-28", "2026-10-29"], None).status_code == 200
+    assert set_days(["2026-11-01"], {"start": "11:00", "end": "14:00"}).status_code == 200
     calendar = client.get(f"/api/calendar?month=2026-10&services={ids}", headers=headers).json()
-    assert "2026-10-27" not in calendar["days"]
     assert "2026-10-28" not in calendar["days"]
-    assert "2026-10-29" in calendar["days"]
+    assert "2026-10-29" not in calendar["days"]
+    assert "2026-10-30" in calendar["days"]
     slots = client.get(f"/api/slots?date=2026-11-01&services={ids}", headers=headers).json()["slots"]
     assert slots == ["11:00", "12:00"]
 
-    # Вернуть обычную неделю
-    reset = set_days(["2026-10-28"], None).json()["special_days"]
-    assert sorted(reset) == ["2026-10-27", "2026-11-01"]
-    assert "2026-10-28" in client.get(f"/api/calendar?month=2026-10&services={ids}", headers=headers).json()["days"]
-
-    assert set_days(["2026-10-01"], off).status_code == 400  # прошлое
-    assert set_days(["2027-12-01"], off).status_code == 400  # дальше года
-    assert set_days(["2026-11-02"], {"enabled": True, "start": "15:00", "end": "12:00"}).status_code == 422
-    assert set_days([], off).status_code == 422
+    assert set_days(["2026-10-01"], None).status_code == 400  # прошлое
+    assert set_days(["2027-12-01"], lunch).status_code == 400  # дальше года
+    assert set_days(["2026-11-02"], {"start": "15:00", "end": "12:00"}).status_code == 422
+    outside = {"start": "10:00", "end": "15:00", "breaks": [{"start": "14:00", "end": "16:00"}]}
+    assert set_days(["2026-11-02"], outside).status_code == 422
+    assert set_days([], None).status_code == 422
 
 
-def test_admin_schedule_counts_bookings(client, services, admin_headers):
-    assert book(client, services).status_code == 201
-    booked = client.get("/api/admin/schedule", headers=admin_headers).json()["booked"]
-    assert booked == {"2026-10-27": 1}
+def test_admin_schedule_lists_bookings(client, services, admin_headers):
+    booking = book(client, services).json()
+    bookings = client.get("/api/admin/schedule", headers=admin_headers).json()["bookings"]
+    assert [(b["id"], b["date"], b["time"]) for b in bookings] == [(booking["id"], "2026-10-27", "10:00")]
 
 
 def test_notifications_fall_back_to_admins(tmp_path, fake_bot):
@@ -233,12 +226,13 @@ def test_notifications_fall_back_to_admins(tmp_path, fake_bot):
     from app.config import Settings
     from app.main import create_app
 
-    from .conftest import BOT_TOKEN, NOW
+    from .conftest import BOT_TOKEN, NOW, open_work_days
 
     settings = Settings(bot_token=BOT_TOKEN, admin_ids=(ADMIN_ID,), database_path=tmp_path / "db.sqlite")
     app = create_app(settings, bot=fake_bot, run_bot=False, clock=lambda: NOW)
     with TestClient(app) as client:
         admin = auth_headers(ADMIN_ID)
+        open_work_days(client, admin)
         service = client.post("/api/admin/services", json={"name": "Педикюр", "price": 3000, "duration_min": 60}, headers=admin).json()
         assert book(client, [service], ids=[service["id"]]).status_code == 201
     assert "Новая запись!" in fake_bot.texts_for(ADMIN_ID)[0]

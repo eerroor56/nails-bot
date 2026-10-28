@@ -1,13 +1,14 @@
 """Хранилище на SQLite (aiosqlite)."""
 
+import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-from .scheduling import DaySchedule, ScheduleSettings, fmt_hhmm, parse_hhmm
+from .scheduling import DAYS_AHEAD, ScheduleSettings, WorkDay, fmt_hhmm, parse_hhmm
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS services (
@@ -52,12 +53,12 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
--- Дни, настроенные в календаре мастера: свои часы работы или выходной вместо обычной недели
-CREATE TABLE IF NOT EXISTS special_days (
+-- Рабочие дни из календаря мастера; дня нет в таблице — мастер в этот день не работает
+CREATE TABLE IF NOT EXISTS work_days (
     date      TEXT    PRIMARY KEY,
-    enabled   INTEGER NOT NULL,     -- 0 — выходной
     start_min INTEGER NOT NULL,
-    end_min   INTEGER NOT NULL
+    end_min   INTEGER NOT NULL,
+    breaks    TEXT    NOT NULL DEFAULT '[]'  -- JSON: [{"start": "12:00", "end": "13:00"}, ...]
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -69,6 +70,12 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
+
+# Обычная неделя по умолчанию в версиях до календаря: пн–пт 10–20, сб 10–18, вс выходной
+LEGACY_WEEK = [{"enabled": True, "start": "10:00", "end": "20:00"}] * 5 + [
+    {"enabled": True, "start": "10:00", "end": "18:00"},
+    {"enabled": False},
+]
 
 SERVICE_FIELDS = ("name", "description", "price", "duration_min", "is_active", "sort_order")
 
@@ -100,18 +107,49 @@ class Database:
         if str(self.path) != ":memory:":
             await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.executescript(SCHEMA)
-        await self._migrate_days_off()
+        await self._migrate_legacy_schedule()
         await self._conn.commit()
 
-    async def _migrate_days_off(self) -> None:
-        # Раньше выходные по датам хранились в отдельной таблице days_off
-        async with self.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'days_off'") as cur:
-            if await cur.fetchone() is None:
-                return
-        await self.conn.execute(
-            "INSERT OR IGNORE INTO special_days(date, enabled, start_min, end_min) SELECT date, 0, 600, 1200 FROM days_off"
+    async def _migrate_legacy_schedule(self) -> None:
+        """Раньше часы задавала обычная неделя, а исключения хранились в таблицах days_off и special_days.
+        Расписываем ту неделю в календаре на год вперёд, чтобы после обновления рабочие дни у мастера не пропали."""
+        async with self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('days_off', 'special_days')"
+        ) as cur:
+            legacy = {row["name"] for row in await cur.fetchall()}
+        if not legacy:
+            return
+        async with self.conn.execute("SELECT value FROM settings WHERE key = 'schedule'") as cur:
+            row = await cur.fetchone()
+        stored = json.loads(row["value"]) if row else {}
+        week = stored.pop("week", None) or LEGACY_WEEK
+
+        # Исключения из недели: дата → часы или None для выходного
+        exceptions: dict[str, tuple[int, int] | None] = {}
+        if "days_off" in legacy:
+            async with self.conn.execute("SELECT date FROM days_off") as cur:
+                exceptions.update({r["date"]: None for r in await cur.fetchall()})
+        if "special_days" in legacy:
+            async with self.conn.execute("SELECT * FROM special_days") as cur:
+                for r in await cur.fetchall():
+                    exceptions[r["date"]] = (r["start_min"], r["end_min"]) if r["enabled"] else None
+
+        hours: dict[str, tuple[int, int] | None] = {}
+        day = date.today() - timedelta(days=1)
+        while day <= date.today() + timedelta(days=DAYS_AHEAD):
+            usual = week[day.weekday()]
+            if usual.get("enabled"):
+                hours[day.isoformat()] = (parse_hhmm(usual["start"]), parse_hhmm(usual["end"]))
+            day += timedelta(days=1)
+        hours.update(exceptions)
+        await self.conn.executemany(
+            "INSERT OR IGNORE INTO work_days(date, start_min, end_min) VALUES (?, ?, ?)",
+            [(key, *value) for key, value in hours.items() if value is not None],
         )
-        await self.conn.execute("DROP TABLE days_off")
+        for table in legacy:
+            await self.conn.execute(f"DROP TABLE {table}")
+        if row is not None:
+            await self.conn.execute("UPDATE settings SET value = ? WHERE key = 'schedule'", (json.dumps(stored),))
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -135,31 +173,32 @@ class Database:
         )
         await self.conn.commit()
 
-    async def list_special_days(self, date_from: date, date_to: date | None = None) -> dict[str, DaySchedule]:
-        query, params = "SELECT * FROM special_days WHERE date >= ?", [date_from.isoformat()]
+    async def list_work_days(self, date_from: date, date_to: date | None = None) -> dict[str, WorkDay]:
+        query, params = "SELECT * FROM work_days WHERE date >= ?", [date_from.isoformat()]
         if date_to is not None:
             query += " AND date <= ?"
             params.append(date_to.isoformat())
         async with self.conn.execute(query + " ORDER BY date", params) as cur:
             return {
-                row["date"]: DaySchedule(
-                    enabled=bool(row["enabled"]), start=fmt_hhmm(row["start_min"]), end=fmt_hhmm(row["end_min"])
+                row["date"]: WorkDay(
+                    start=fmt_hhmm(row["start_min"]), end=fmt_hhmm(row["end_min"]), breaks=json.loads(row["breaks"])
                 )
                 for row in await cur.fetchall()
             }
 
-    async def set_special_days(self, days: list[date], schedule: DaySchedule | None) -> None:
-        """Свои часы или выходной на эти даты; None — вернуть им обычную неделю."""
+    async def set_work_days(self, days: list[date], work: WorkDay | None) -> None:
+        """Часы работы и перерывы на эти даты; None — выходной."""
         keys = [day.isoformat() for day in days]
-        if schedule is None:
-            await self.conn.executemany("DELETE FROM special_days WHERE date = ?", [(key,) for key in keys])
+        if work is None:
+            await self.conn.executemany("DELETE FROM work_days WHERE date = ?", [(key,) for key in keys])
         else:
-            start, end = parse_hhmm(schedule.start), parse_hhmm(schedule.end)
+            start, end = parse_hhmm(work.start), parse_hhmm(work.end)
+            breaks = json.dumps([pause.model_dump() for pause in work.breaks])
             await self.conn.executemany(
-                "INSERT INTO special_days(date, enabled, start_min, end_min) VALUES (?, ?, ?, ?) "
+                "INSERT INTO work_days(date, start_min, end_min, breaks) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(date) DO UPDATE SET "
-                "enabled = excluded.enabled, start_min = excluded.start_min, end_min = excluded.end_min",
-                [(key, int(schedule.enabled), start, end) for key in keys],
+                "start_min = excluded.start_min, end_min = excluded.end_min, breaks = excluded.breaks",
+                [(key, start, end, breaks) for key in keys],
             )
         await self.conn.commit()
 
@@ -309,13 +348,6 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         return await self._attach_services(rows)
-
-    async def count_bookings_by_date(self, from_date: date) -> dict[str, int]:
-        async with self.conn.execute(
-            "SELECT date, COUNT(*) AS n FROM bookings WHERE status = 'active' AND date >= ? GROUP BY date",
-            (from_date.isoformat(),),
-        ) as cur:
-            return {row["date"]: row["n"] for row in await cur.fetchall()}
 
     async def count_active_bookings(self, user_id: int, from_date: date) -> int:
         async with self.conn.execute(

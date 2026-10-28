@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -76,8 +76,24 @@ def admin_headers() -> dict[str, str]:
     return auth_headers(ADMIN_ID, "Мастер", "master")
 
 
+def open_work_days(client, headers) -> None:
+    """Расписывает календарь, как было в обычной неделе: пн–пт 10–20, сб 10–18, вс выходной."""
+    weekdays, saturdays = [], []
+    day = NOW.date()
+    while day <= date(2026, 12, 31):
+        if day.weekday() < 5:
+            weekdays.append(day.isoformat())
+        elif day.weekday() == 5:
+            saturdays.append(day.isoformat())
+        day += timedelta(days=1)
+    for dates, end in ((weekdays, "20:00"), (saturdays, "18:00")):
+        response = client.put("/api/admin/days", json={"dates": dates, "day": {"start": "10:00", "end": end}}, headers=headers)
+        assert response.status_code == 200, response.text
+
+
 @pytest.fixture
 def services(client, admin_headers) -> list[dict]:
+    open_work_days(client, admin_headers)
     created = []
     for body in (
         {"name": "Маникюр с покрытием", "description": "Гель-лак", "price": 2500, "duration_min": 90},

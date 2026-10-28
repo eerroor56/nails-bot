@@ -17,44 +17,59 @@ def fmt_hhmm(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
-class DaySchedule(BaseModel):
-    enabled: bool = True
-    start: str = Field(default="10:00", pattern=TIME_PATTERN)
-    end: str = Field(default="20:00", pattern=TIME_PATTERN)
+# На сколько дней вперёд мастер может расписать дни в календаре
+DAYS_AHEAD = 365
+# Сколько перерывов можно добавить в один день
+MAX_BREAKS = 5
+
+
+class Break(BaseModel):
+    start: str = Field(pattern=TIME_PATTERN)
+    end: str = Field(pattern=TIME_PATTERN)
 
     @model_validator(mode="after")
-    def _check_range(self) -> "DaySchedule":
-        if self.enabled and parse_hhmm(self.start) >= parse_hhmm(self.end):
-            raise ValueError("Время начала работы должно быть раньше времени окончания")
+    def _check_range(self) -> "Break":
+        if parse_hhmm(self.start) >= parse_hhmm(self.end):
+            raise ValueError("У перерыва время начала должно быть раньше окончания")
         return self
 
 
-def _default_week() -> list[DaySchedule]:
-    weekdays = [DaySchedule() for _ in range(5)]
-    return weekdays + [DaySchedule(start="10:00", end="18:00"), DaySchedule(enabled=False)]
+class WorkDay(BaseModel):
+    """Рабочий день из календаря мастера. Дней, которых нет в календаре, мастер не работает."""
+
+    start: str = Field(default="10:00", pattern=TIME_PATTERN)
+    end: str = Field(default="20:00", pattern=TIME_PATTERN)
+    breaks: list[Break] = Field(default_factory=list, max_length=MAX_BREAKS)
+
+    @model_validator(mode="after")
+    def _check_range(self) -> "WorkDay":
+        start, end = parse_hhmm(self.start), parse_hhmm(self.end)
+        if start >= end:
+            raise ValueError("Время начала работы должно быть раньше времени окончания")
+        self.breaks = sorted(self.breaks, key=lambda b: parse_hhmm(b.start))
+        previous = start
+        for pause in self.breaks:
+            if parse_hhmm(pause.start) < previous or parse_hhmm(pause.end) > end:
+                raise ValueError("Перерывы должны быть внутри рабочего времени и не пересекаться")
+            previous = parse_hhmm(pause.end)
+        return self
 
 
 class ScheduleSettings(BaseModel):
-    slot_step: Literal[30, 60] = 30
-    horizon_days: int = Field(default=30, ge=1, le=365)
+    slot_step: Literal[15, 30, 45, 60] = 30
+    horizon_days: int = Field(default=30, ge=1, le=DAYS_AHEAD)
     min_lead_minutes: int = Field(default=60, ge=0, le=7 * 24 * 60)
-    # Понедельник = 0 ... воскресенье = 6
-    week: list[DaySchedule] = Field(default_factory=_default_week)
-
-    @field_validator("week")
-    @classmethod
-    def _seven_days(cls, value: list[DaySchedule]) -> list[DaySchedule]:
-        if len(value) != 7:
-            raise ValueError("Нужно расписание на 7 дней недели")
-        return value
 
 
-def working_hours(day: date, settings: ScheduleSettings, special: dict[str, DaySchedule]) -> tuple[int, int] | None:
-    # День, настроенный в календаре, важнее обычной недели
-    sched = special.get(day.isoformat(), settings.week[day.weekday()])
-    if not sched.enabled:
-        return None
-    return parse_hhmm(sched.start), parse_hhmm(sched.end)
+def work_segments(day: WorkDay) -> list[tuple[int, int]]:
+    """Рабочие отрезки дня между перерывами. После перерыва сетка времени начинается заново:
+    мастер вернулся с обеда в 13:00 — значит, первое окно в 13:00, а не по сетке от начала дня."""
+    segments, start = [], parse_hhmm(day.start)
+    for pause in day.breaks:
+        segments.append((start, parse_hhmm(pause.start)))
+        start = parse_hhmm(pause.end)
+    segments.append((start, parse_hhmm(day.end)))
+    return [(seg_start, seg_end) for seg_start, seg_end in segments if seg_start < seg_end]
 
 
 def bookable_range(settings: ScheduleSettings, now: datetime) -> tuple[date, date]:
@@ -96,15 +111,18 @@ def free_slots(
 def day_slots(
     day: date,
     settings: ScheduleSettings,
-    special: dict[str, DaySchedule],
+    work_days: dict[str, WorkDay],
     busy: list[tuple[int, int]],
     duration: int,
     now: datetime,
 ) -> list[int]:
     first, last = bookable_range(settings, now)
-    if not first <= day <= last:
+    work = work_days.get(day.isoformat())
+    if work is None or not first <= day <= last:
         return []
-    hours = working_hours(day, settings, special)
-    if hours is None:
-        return []
-    return free_slots(hours, settings.slot_step, duration, busy, earliest_minute(day, settings, now))
+    earliest = earliest_minute(day, settings, now)
+    return [
+        start
+        for segment in work_segments(work)
+        for start in free_slots(segment, settings.slot_step, duration, busy, earliest)
+    ]
