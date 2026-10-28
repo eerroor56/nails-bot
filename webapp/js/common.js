@@ -104,13 +104,31 @@
       document.body.appendChild(bar);
     }
 
+    // Telegram для Android не перерисовывает кнопку, если у неё сменился только текст: на экране остаётся
+    // надпись прошлой вкладки, а новая появляется лишь от касания. Смену цвета он отрисовывает, поэтому
+    // вместе с текстом чуть меняем цвет — на единицу в синем канале, глазу это незаметно
+    let lastText = null;
+    let nudged = false;
+
+    function nudge(color) {
+      const m = /^#([0-9a-f]{6})$/i.exec(color);
+      if (!m) return color;
+      const blue = parseInt(m[1].slice(4), 16);
+      return `#${m[1].slice(0, 4)}${(blue === 255 ? 254 : blue + 1).toString(16).padStart(2, '0')}`;
+    }
+
     function paint(text) {
       if (inTelegram) {
         const theme = tg.themeParams || {};
+        if (text !== undefined && text !== lastText) {
+          lastText = text;
+          nudged = !nudged;
+        }
+        const color = enabled ? theme.button_color || '#2481cc' : theme.hint_color || '#a0a0a0';
         const params = {
           is_visible: true,
           is_active: enabled,
-          color: enabled ? theme.button_color || '#2481cc' : theme.hint_color || '#a0a0a0',
+          color: nudged ? nudge(color) : color,
           text_color: theme.button_text_color || '#ffffff',
         };
         if (text !== undefined) params.text = text;
@@ -131,7 +149,8 @@
       show(text, fn, options = {}) {
         handler = fn;
         enabled = options.enabled !== false;
-        if (inTelegram) safely(() => tg.MainButton.hideProgress());
+        // hideProgress() заодно включает неактивную кнопку — лишнее событие, если прогресса и не было
+        if (inTelegram && tg.MainButton.isProgressVisible) safely(() => tg.MainButton.hideProgress());
         paint(text);
       },
       setEnabled(value) {
