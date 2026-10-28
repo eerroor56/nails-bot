@@ -450,7 +450,9 @@
 
   function tabSchedule() {
     if (state.schedule === null) {
-      mainButton.hide();
+      // Не прячем кнопку на время загрузки: Telegram для Android после быстрых hide → show
+      // показывает текст предыдущей вкладки («Добавить услугу» на графике и наоборот)
+      mainButton.show('Сохранить график', saveSchedule, { enabled: false });
       return spinner();
     }
     mainButton.show('Сохранить график', saveSchedule);

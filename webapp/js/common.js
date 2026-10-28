@@ -106,9 +106,6 @@
 
     function paint(text) {
       if (inTelegram) {
-        // Telegram для Android не обновляет текст уже показанной кнопки (оставалось «Сохранить график»
-        // на вкладке «Услуги»), поэтому при смене текста кнопку сначала прячем
-        if (text !== undefined && tg.MainButton.isVisible && tg.MainButton.text !== text) tg.MainButton.hide();
         const theme = tg.themeParams || {};
         const params = {
           is_visible: true,
