@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS services (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT    NOT NULL,
     description  TEXT    NOT NULL DEFAULT '',
+    category     TEXT    NOT NULL DEFAULT '',  -- группа услуг, например «Маникюр»
     price        INTEGER NOT NULL,
     duration_min INTEGER NOT NULL,
     is_active    INTEGER NOT NULL DEFAULT 1,
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     start_min    INTEGER NOT NULL,              -- минуты от полуночи
     end_min      INTEGER NOT NULL,
     total_price  INTEGER NOT NULL,
+    comment      TEXT    NOT NULL DEFAULT '',  -- пожелания клиента
     status       TEXT    NOT NULL DEFAULT 'active',  -- active | cancelled
     cancelled_by TEXT,                          -- client | master
     created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -77,7 +79,13 @@ LEGACY_WEEK = [{"enabled": True, "start": "10:00", "end": "20:00"}] * 5 + [
     {"enabled": False},
 ]
 
-SERVICE_FIELDS = ("name", "description", "price", "duration_min", "is_active", "sort_order")
+# Поля, которых не было в таблицах первых версий бота: (таблица, колонка, описание)
+ADDED_COLUMNS = (
+    ("services", "category", "TEXT NOT NULL DEFAULT ''"),
+    ("bookings", "comment", "TEXT NOT NULL DEFAULT ''"),
+)
+
+SERVICE_FIELDS = ("name", "description", "category", "price", "duration_min", "is_active", "sort_order")
 
 
 def _service(row: aiosqlite.Row) -> dict[str, Any]:
@@ -107,8 +115,17 @@ class Database:
         if str(self.path) != ":memory:":
             await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.executescript(SCHEMA)
+        await self._add_missing_columns()
         await self._migrate_legacy_schedule()
         await self._conn.commit()
+
+    async def _add_missing_columns(self) -> None:
+        """CREATE TABLE IF NOT EXISTS не трогает старые таблицы — новые поля добавляем в них сами."""
+        for table, column, definition in ADDED_COLUMNS:
+            async with self.conn.execute(f"PRAGMA table_info({table})") as cur:
+                columns = {row["name"] for row in await cur.fetchall()}
+            if column not in columns:
+                await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     async def _migrate_legacy_schedule(self) -> None:
         """Раньше часы задавала обычная неделя, а исключения хранились в таблицах days_off и special_days.
@@ -272,13 +289,14 @@ class Database:
         day: date,
         start_min: int,
         services: list[dict[str, Any]],
+        comment: str = "",
     ) -> int:
         duration = sum(s["duration_min"] for s in services)
         total = sum(s["price"] for s in services)
         cur = await self.conn.execute(
-            "INSERT INTO bookings(user_id, username, client_name, phone, date, start_min, end_min, total_price) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, username, client_name, phone, day.isoformat(), start_min, start_min + duration, total),
+            "INSERT INTO bookings(user_id, username, client_name, phone, date, start_min, end_min, total_price, comment) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, username, client_name, phone, day.isoformat(), start_min, start_min + duration, total, comment),
         )
         booking_id = cur.lastrowid
         await self.conn.executemany(
@@ -348,13 +366,6 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         return await self._attach_services(rows)
-
-    async def count_active_bookings(self, user_id: int, from_date: date) -> int:
-        async with self.conn.execute(
-            "SELECT COUNT(*) AS n FROM bookings WHERE user_id = ? AND status = 'active' AND date >= ?",
-            (user_id, from_date.isoformat()),
-        ) as cur:
-            return (await cur.fetchone())["n"]
 
     async def cancel_booking(self, booking_id: int, by: str) -> bool:
         cur = await self.conn.execute(

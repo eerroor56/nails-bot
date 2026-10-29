@@ -1,10 +1,16 @@
-from .conftest import ADMIN_ID, MASTER_CHAT_ID, auth_headers
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+
+from .conftest import ADMIN_ID, MASTER_CHAT_ID, NOW, add_services, auth_headers
 
 CLIENT_ID = 555
 OTHER_ID = 777
 
 
-def book(client, services, *, user_id=CLIENT_ID, date="2026-10-27", time="10:00", ids=None, phone="8 (999) 123-45-67"):
+def book(
+    client, services, *, user_id=CLIENT_ID, date="2026-10-27", time="10:00", ids=None, phone="8 (999) 123-45-67", comment=None
+):
     body = {
         "service_ids": ids or [services[0]["id"], services[1]["id"]],
         "date": date,
@@ -12,6 +18,8 @@ def book(client, services, *, user_id=CLIENT_ID, date="2026-10-27", time="10:00"
         "client_name": "Анна",
         "phone": phone,
     }
+    if comment is not None:
+        body["comment"] = comment
     return client.post("/api/bookings", json=body, headers=auth_headers(user_id))
 
 
@@ -68,6 +76,30 @@ def test_services_crud(client, admin_headers, services):
     assert isinstance(bad.json()["detail"], str)
 
 
+def test_service_groups(client, admin_headers, services):
+    def save(name, category, service_id=None):
+        body = {"name": name, "category": category, "price": 1000, "duration_min": 60}
+        if service_id is None:
+            return client.post("/api/admin/services", json=body, headers=admin_headers).json()
+        return client.put(f"/api/admin/services/{service_id}", json=body, headers=admin_headers).json()
+
+    assert services[0]["category"] == ""  # без группы
+    assert save("Френч", "  маникюр ")["category"] == "Маникюр"
+    # Та же группа другими буквами не превращается во вторую «МАНИКЮР»
+    assert save("Покрытие", "МАНИКЮР")["category"] == "Маникюр"
+    pedicure = save("Педикюр", "Педикюр  с  покрытием")
+    assert pedicure["category"] == "Педикюр с покрытием"
+    # Единственную услугу группы можно переписать другими буквами — группа переименуется
+    assert save("Педикюр", "ПЕДИКЮР С ПОКРЫТИЕМ", pedicure["id"])["category"] == "ПЕДИКЮР С ПОКРЫТИЕМ"
+
+    visible = client.get("/api/services", headers=auth_headers(CLIENT_ID)).json()
+    assert [(s["name"], s["category"]) for s in visible][-3:] == [
+        ("Френч", "Маникюр"),
+        ("Покрытие", "Маникюр"),
+        ("Педикюр", "ПЕДИКЮР С ПОКРЫТИЕМ"),
+    ]
+
+
 def test_calendar_and_slots(client, services):
     headers = auth_headers(CLIENT_ID)
     ids = f"{services[0]['id']},{services[1]['id']}"  # 90 + 30 = 120 минут
@@ -88,13 +120,14 @@ def test_calendar_and_slots(client, services):
 
 
 def test_booking_flow_sends_notifications(client, services, fake_bot):
-    response = book(client, services)
+    response = book(client, services, comment="  Френч, <без> блёсток ")
     assert response.status_code == 201, response.text
     booking = response.json()
     assert booking["time"] == "10:00"
     assert booking["end_time"] == "12:00"
     assert booking["total_price"] == 3500
     assert booking["phone"] == "+79991234567"
+    assert booking["comment"] == "Френч, <без> блёсток"
     assert [s["name"] for s in booking["services"]] == ["Маникюр с покрытием", "Дизайн"]
 
     master = fake_bot.texts_for(MASTER_CHAT_ID)
@@ -104,6 +137,7 @@ def test_booking_flow_sends_notifications(client, services, fake_bot):
     assert "Услуга: Маникюр с покрытием, Дизайн" in master[0]
     assert "Дата и время: 27 октября 2026 (вт), 10:00–12:00" in master[0]
     assert "Сумма: 3 500 ₽" in master[0]
+    assert master[0].endswith("\nПожелания: Френч, &lt;без&gt; блёсток")
 
     client_messages = fake_bot.texts_for(CLIENT_ID)
     assert len(client_messages) == 1
@@ -182,7 +216,7 @@ def test_admin_rules_and_work_days(client, services, admin_headers):
     assert data["days"]["2026-10-27"] == {"start": "10:00", "end": "20:00", "breaks": []}
     assert "2026-11-01" not in data["days"]  # воскресенье — выходной
     schedule = data["schedule"]
-    assert schedule == {"slot_step": 30, "horizon_days": 30, "min_lead_minutes": 60}
+    assert schedule == {"slot_step": 30, "horizon_days": 30, "min_lead_minutes": 60, "timezone": "Europe/Moscow"}
     schedule["slot_step"] = 60
     assert client.put("/api/admin/schedule", json=schedule, headers=admin_headers).status_code == 200
     assert client.put("/api/admin/schedule", json={**schedule, "slot_step": 20}, headers=admin_headers).status_code == 422
@@ -217,7 +251,61 @@ def test_admin_rules_and_work_days(client, services, admin_headers):
 def test_admin_schedule_lists_bookings(client, services, admin_headers):
     booking = book(client, services).json()
     bookings = client.get("/api/admin/schedule", headers=admin_headers).json()["bookings"]
-    assert [(b["id"], b["date"], b["time"]) for b in bookings] == [(booking["id"], "2026-10-27", "10:00")]
+    assert [(b["id"], b["date"], b["time"], b["phase"]) for b in bookings] == [
+        (booking["id"], "2026-10-27", "10:00", "upcoming")
+    ]
+
+
+def test_master_timezone(client, settings, fake_bot, services, admin_headers):
+    def first_slot(app_client):
+        url = f"/api/slots?date=2026-10-26&services={services[0]['id']}"
+        return app_client.get(url, headers=auth_headers(CLIENT_ID)).json()["slots"][0]
+
+    def save(rules):
+        return client.put("/api/admin/schedule", json=rules, headers=admin_headers)
+
+    schedule = client.get("/api/admin/schedule", headers=admin_headers).json()["schedule"]
+    assert first_slot(client) == "10:00"  # в Москве 09:00, записаться можно за час
+
+    assert save({**schedule, "timezone": "Europe/Samara"}).json()["timezone"] == "Europe/Samara"
+    assert first_slot(client) == "11:00"  # в Самаре уже 10:00
+
+    # Правила без часового пояса (старая версия панели) не сбрасывают выбранный
+    rules = {key: value for key, value in schedule.items() if key != "timezone"}
+    assert save(rules).json()["timezone"] == "Europe/Samara"
+    assert save({**schedule, "timezone": "Mars/Olympus"}).status_code == 422
+
+    # После перезапуска бот помнит пояс
+    with TestClient(create_app(settings, bot=fake_bot, run_bot=False, clock=lambda: NOW)) as restarted:
+        assert first_slot(restarted) == "11:00"
+
+
+def test_bookings_move_to_past_when_finished(settings, fake_bot, admin_headers):
+    now = [NOW]  # понедельник, 09:00 по Москве
+    app = create_app(settings, bot=fake_bot, run_bot=False, clock=lambda: now[0])
+    with TestClient(app) as client:
+        services = add_services(client, admin_headers)
+        booking = book(client, services, date="2026-10-26").json()  # сегодня 10:00–12:00
+
+        def listed(scope):
+            response = client.get(f"/api/admin/bookings?scope={scope}", headers=admin_headers)
+            return [(b["id"], b["phase"]) for b in response.json()]
+
+        assert listed("upcoming") == [(booking["id"], "upcoming")]
+        now[0] = NOW.replace(hour=11)
+        assert listed("upcoming") == [(booking["id"], "ongoing")]
+        assert listed("past") == []
+
+        now[0] = NOW.replace(hour=12)
+        assert listed("upcoming") == []
+        assert listed("past") == [(booking["id"], "finished")]
+        assert client.get("/api/bookings/my", headers=auth_headers(CLIENT_ID)).json() == []
+        # Прошедшую запись не отменить — клиенту не придёт странное «запись отменена»
+        assert client.post(f"/api/admin/bookings/{booking['id']}/cancel", headers=admin_headers).status_code == 409
+
+        # Прошедшая запись не занимает место в лимите будущих записей клиента
+        for day in ("2026-10-27", "2026-10-28", "2026-10-29"):
+            assert book(client, services, date=day).status_code == 201
 
 
 def test_notifications_fall_back_to_admins(tmp_path, fake_bot):
@@ -236,3 +324,4 @@ def test_notifications_fall_back_to_admins(tmp_path, fake_bot):
         service = client.post("/api/admin/services", json={"name": "Педикюр", "price": 3000, "duration_min": 60}, headers=admin).json()
         assert book(client, [service], ids=[service["id"]]).status_code == 201
     assert "Новая запись!" in fake_bot.texts_for(ADMIN_ID)[0]
+    assert "Пожелания" not in fake_bot.texts_for(ADMIN_ID)[0]  # клиент ничего не написал

@@ -5,7 +5,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import admin, router
+from .api import admin, master_tz, router
 from .bot import build_dispatcher, setup_bot
 from .config import WEBAPP_DIR, Settings
 from .db import Database
@@ -36,7 +36,7 @@ def create_app(
     """
     bot     — готовый экземпляр бота (в тестах); по умолчанию создаётся из BOT_TOKEN.
     run_bot — запускать ли получение апдейтов (polling/webhook).
-    clock   — источник текущего времени (в тестах фиксируется).
+    clock   — источник текущего времени (в тестах фиксируется); в часовой пояс мастера его переводит API.
     """
     settings = settings or Settings.from_env()
 
@@ -44,6 +44,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         db = Database(settings.database_path)
         await db.connect()
+        app.state.tz = master_tz(await db.get_schedule(), settings)
 
         own_bot = bot is None and bool(settings.bot_token)
         tg_bot = bot or (
@@ -90,7 +91,8 @@ def create_app(
 
     app = FastAPI(title="Booking bot", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.settings = settings
-    app.state.clock = clock or (lambda: datetime.now(settings.tz))
+    app.state.clock = clock or (lambda: datetime.now(timezone.utc))
+    app.state.tz = settings.tz
     app.state.booking_lock = asyncio.Lock()
 
     @app.exception_handler(RequestValidationError)

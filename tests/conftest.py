@@ -93,6 +93,11 @@ def open_work_days(client, headers) -> None:
 
 @pytest.fixture
 def services(client, admin_headers) -> list[dict]:
+    return add_services(client, admin_headers)
+
+
+def add_services(client, admin_headers) -> list[dict]:
+    """Рабочие дни и три услуги, одна из них скрыта."""
     open_work_days(client, admin_headers)
     created = []
     for body in (

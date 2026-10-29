@@ -406,6 +406,19 @@
     },
   };
 
+  // Услуги по группам: [['Маникюр', [...]], ['', [...]]]. Группы — в порядке первой услуги, без группы — в конце
+  function groupServices(services) {
+    const groups = new Map();
+    for (const service of services) {
+      const key = service.category || '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(service);
+    }
+    const ungrouped = groups.get('');
+    groups.delete('');
+    return ungrouped ? [...groups, ['', ungrouped]] : [...groups];
+  }
+
   function openTelegramLink(url) {
     if (versionAtLeast('6.1')) tg.openTelegramLink(url);
     else window.open(url, '_blank');
@@ -439,6 +452,7 @@
     toast,
     picker,
     fmt,
+    groupServices,
     openTelegramLink,
     init,
     currency: '₽',

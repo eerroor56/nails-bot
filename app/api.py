@@ -5,6 +5,7 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
@@ -39,8 +40,14 @@ def get_notifier(request: Request) -> Notifier:
     return request.app.state.notifier
 
 
+def master_tz(schedule: ScheduleSettings, settings: Settings) -> ZoneInfo:
+    """Часовой пояс из правил записи, а пока мастер его не выбрал — TIMEZONE с сервера."""
+    return ZoneInfo(schedule.timezone or settings.timezone)
+
+
 def get_now(request: Request) -> datetime:
-    return request.app.state.clock()
+    # Время мастера: от него зависят «сегодня», свободные окна и то, какие записи уже прошли
+    return request.app.state.clock().astimezone(request.app.state.tz)
 
 
 def current_user(request: Request, settings: Settings = Depends(get_settings)) -> TgUser:
@@ -85,6 +92,8 @@ class BookingIn(BaseModel):
     time: str = Field(pattern=TIME_PATTERN)
     client_name: str = Field(min_length=1, max_length=64)
     phone: str = Field(max_length=32)
+    # Пожелания клиента к записи, необязательно
+    comment: str = Field(default="", max_length=500)
 
     @field_validator("client_name")
     @classmethod
@@ -93,6 +102,11 @@ class BookingIn(BaseModel):
         if len(value) < 2:
             raise ValueError("Укажите имя")
         return value
+
+    @field_validator("comment")
+    @classmethod
+    def _comment(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("phone")
     @classmethod
@@ -103,6 +117,8 @@ class BookingIn(BaseModel):
 class ServiceIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
+    # Группа, под которой клиент видит услугу, например «Маникюр»; пустая — без группы
+    category: str = Field(default="", max_length=50)
     price: int = Field(ge=0, le=10_000_000)
     duration_min: int = Field(ge=5, le=12 * 60)
     is_active: bool = True
@@ -112,6 +128,13 @@ class ServiceIn(BaseModel):
     @classmethod
     def _strip(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("category")
+    @classmethod
+    def _category(cls, value: str) -> str:
+        # Заголовок группы у клиента: «педикюр» → «Педикюр»
+        value = " ".join(value.split())
+        return value[:1].upper() + value[1:]
 
 
 class WorkDaysIn(BaseModel):
@@ -147,10 +170,38 @@ async def slots_for_day(db: Database, day: date, duration: int, now: datetime) -
     return day_slots(day, schedule, work_days, busy.get(day.isoformat(), []), duration, now)
 
 
-def is_upcoming(booking: dict[str, Any], now: datetime) -> bool:
+async def canonical_category(db: Database, category: str, service_id: int | None = None) -> str:
+    """«маникюр» относим к уже заведённой группе «Маникюр», чтобы у клиента не появилось двух одинаковых групп."""
+    for service in await db.list_services():
+        if service["id"] != service_id and service["category"].casefold() == category.casefold():
+            return service["category"]
+    return category
+
+
+def booking_phase(booking: dict[str, Any], now: datetime) -> str:
+    """upcoming — ещё не началась, ongoing — идёт сейчас, finished — уже закончилась."""
     today = now.date().isoformat()
+    if booking["date"] != today:
+        return "upcoming" if booking["date"] > today else "finished"
     now_min = now.hour * 60 + now.minute
-    return booking["date"] > today or (booking["date"] == today and booking["end_min"] > now_min)
+    if booking["end_min"] <= now_min:
+        return "finished"
+    return "ongoing" if booking["start_min"] <= now_min else "upcoming"
+
+
+def is_upcoming(booking: dict[str, Any], now: datetime) -> bool:
+    return booking_phase(booking, now) != "finished"
+
+
+def with_phase(bookings: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    for booking in bookings:
+        booking["phase"] = booking_phase(booking, now)
+    return bookings
+
+
+async def upcoming_bookings(db: Database, user_id: int, now: datetime) -> list[dict[str, Any]]:
+    bookings = await db.list_bookings(user_id=user_id, status="active", date_from=now.date())
+    return [b for b in bookings if is_upcoming(b, now)]
 
 
 # ---------- клиент ----------
@@ -249,7 +300,7 @@ async def create_booking(
 
     lock: asyncio.Lock = request.app.state.booking_lock
     async with lock:
-        if await db.count_active_bookings(user.id, now.date()) >= settings.max_active_bookings:
+        if len(await upcoming_bookings(db, user.id, now)) >= settings.max_active_bookings:
             raise HTTPException(
                 403, f"У вас уже {settings.max_active_bookings} активные записи. Отмените одну из них или дождитесь визита"
             )
@@ -263,6 +314,7 @@ async def create_booking(
             day=payload.date,
             start_min=start,
             services=chosen,
+            comment=payload.comment,
         )
 
     await db.upsert_user(
@@ -279,8 +331,7 @@ async def my_bookings(
     db: Database = Depends(get_db),
     now: datetime = Depends(get_now),
 ) -> list[dict[str, Any]]:
-    bookings = await db.list_bookings(user_id=user.id, status="active", date_from=now.date())
-    return [b for b in bookings if is_upcoming(b, now)]
+    return await upcoming_bookings(db, user.id, now)
 
 
 @router.post("/bookings/{booking_id}/cancel")
@@ -317,10 +368,14 @@ async def admin_bookings(
     db: Database = Depends(get_db),
     now: datetime = Depends(get_now),
 ) -> list[dict[str, Any]]:
+    # Запись уходит в прошедшие, когда закончилась, а не на следующий день
     today = now.date()
     if scope == "upcoming":
-        return await db.list_bookings(date_from=today)
-    return await db.list_bookings(date_to=today - timedelta(days=1), newest_first=True, limit=100)
+        bookings = [b for b in await db.list_bookings(date_from=today) if is_upcoming(b, now)]
+    else:
+        bookings = await db.list_bookings(date_to=today, newest_first=True, limit=100)
+        bookings = [b for b in bookings if not is_upcoming(b, now)]
+    return with_phase(bookings, now)
 
 
 @admin.post("/bookings/{booking_id}/cancel")
@@ -329,12 +384,17 @@ async def admin_cancel_booking(
     background: BackgroundTasks,
     db: Database = Depends(get_db),
     notifier: Notifier = Depends(get_notifier),
+    now: datetime = Depends(get_now),
 ) -> dict[str, Any]:
-    if not await db.cancel_booking(booking_id, by="master"):
+    booking = await db.get_booking(booking_id)
+    if booking is None or booking["status"] != "active":
         raise HTTPException(404, "Активная запись не найдена")
+    if not is_upcoming(booking, now):
+        raise HTTPException(409, "Запись уже прошла, отменить её нельзя")
+    await db.cancel_booking(booking_id, by="master")
     booking = await db.get_booking(booking_id)
     background.add_task(notifier.booking_cancelled_by_master, booking)
-    return booking
+    return with_phase([booking], now)[0]
 
 
 @admin.get("/services")
@@ -344,11 +404,13 @@ async def admin_services(db: Database = Depends(get_db)) -> list[dict[str, Any]]
 
 @admin.post("/services", status_code=201)
 async def admin_create_service(payload: ServiceIn, db: Database = Depends(get_db)) -> dict[str, Any]:
+    payload.category = await canonical_category(db, payload.category)
     return await db.create_service(payload.model_dump())
 
 
 @admin.put("/services/{service_id}")
 async def admin_update_service(service_id: int, payload: ServiceIn, db: Database = Depends(get_db)) -> dict[str, Any]:
+    payload.category = await canonical_category(db, payload.category, service_id)
     service = await db.update_service(service_id, payload.model_dump())
     if service is None:
         raise HTTPException(404, "Услуга не найдена")
@@ -365,22 +427,36 @@ async def work_days_json(db: Database, today: date) -> dict[str, Any]:
     return {day: work.model_dump() for day, work in (await db.list_work_days(today)).items()}
 
 
+def schedule_json(schedule: ScheduleSettings, settings: Settings) -> dict[str, Any]:
+    return {**schedule.model_dump(), "timezone": schedule.timezone or settings.timezone}
+
+
 @admin.get("/schedule")
-async def admin_schedule(db: Database = Depends(get_db), now: datetime = Depends(get_now)) -> dict[str, Any]:
+async def admin_schedule(
+    db: Database = Depends(get_db), settings: Settings = Depends(get_settings), now: datetime = Depends(get_now)
+) -> dict[str, Any]:
     today = now.date()
     return {
         "today": today.isoformat(),
-        "schedule": (await db.get_schedule()).model_dump(),
+        "schedule": schedule_json(await db.get_schedule(), settings),
         "days": await work_days_json(db, today),
         # Записи на дни календаря — их видно под календарём, если выбрать день
-        "bookings": await db.list_bookings(status="active", date_from=today),
+        "bookings": with_phase(await db.list_bookings(status="active", date_from=today), now),
     }
 
 
 @admin.put("/schedule")
-async def admin_save_schedule(payload: ScheduleSettings, db: Database = Depends(get_db)) -> dict[str, Any]:
+async def admin_save_schedule(
+    payload: ScheduleSettings,
+    request: Request,
+    db: Database = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    # Без часового пояса в запросе оставляем тот, что был выбран раньше
+    payload.timezone = payload.timezone or (await db.get_schedule()).timezone
     await db.save_schedule(payload)
-    return payload.model_dump()
+    request.app.state.tz = master_tz(payload, settings)
+    return schedule_json(payload, settings)
 
 
 @admin.put("/days")

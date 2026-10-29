@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, time, timedelta
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -59,6 +60,19 @@ class ScheduleSettings(BaseModel):
     slot_step: Literal[15, 30, 45, 60] = 30
     horizon_days: int = Field(default=30, ge=1, le=DAYS_AHEAD)
     min_lead_minutes: int = Field(default=60, ge=0, le=7 * 24 * 60)
+    # Часовой пояс мастера, например Europe/Samara; пустой — TIMEZONE из настроек сервера
+    timezone: str = Field(default="", max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            try:
+                ZoneInfo(value)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError("Неизвестный часовой пояс") from exc
+        return value
 
 
 def work_segments(day: WorkDay) -> list[tuple[int, int]]:

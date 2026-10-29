@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const { h, cls, api, mainButton, backButton, alertBox, confirmBox, haptic, toast, picker, fmt, openTelegramLink } =
+  const { h, cls, api, mainButton, backButton, alertBox, confirmBox, haptic, toast, picker, fmt, groupServices, openTelegramLink } =
     window.App;
   const root = document.getElementById('app');
   const fromClient = new URLSearchParams(window.location.search).get('from') === 'client';
@@ -24,6 +24,20 @@
     [180, '3 часа'],
     [720, '12 часов'],
     [1440, '1 сутки'],
+  ];
+  // Часовые пояса России. Другой можно задать на сервере в TIMEZONE — он тоже появится в списке
+  const TIMEZONES = [
+    ['Europe/Kaliningrad', 'Калининград (UTC+2)'],
+    ['Europe/Moscow', 'Москва, Санкт-Петербург (UTC+3)'],
+    ['Europe/Samara', 'Самара, Саратов, Ульяновск (UTC+4)'],
+    ['Asia/Yekaterinburg', 'Екатеринбург, Уфа, Пермь (UTC+5)'],
+    ['Asia/Omsk', 'Омск (UTC+6)'],
+    ['Asia/Novosibirsk', 'Новосибирск, Красноярск (UTC+7)'],
+    ['Asia/Irkutsk', 'Иркутск (UTC+8)'],
+    ['Asia/Yakutsk', 'Якутск, Чита (UTC+9)'],
+    ['Asia/Vladivostok', 'Владивосток, Хабаровск (UTC+10)'],
+    ['Asia/Magadan', 'Магадан, Сахалин (UTC+11)'],
+    ['Asia/Kamchatka', 'Камчатка (UTC+12)'],
   ];
 
   const state = {
@@ -171,12 +185,21 @@
         : null,
       [...groups].map(([date, items]) => [
         h('div', { class: 'date-header' }, fmt.relativeDate(date)),
-        h('div', { class: 'card' }, items.map(bookingRow)),
+        h('div', { class: 'card' }, items.map((b) => bookingRow(b))),
       ]),
     ];
   }
 
-  function bookingRow(booking, canCancel = state.scope === 'upcoming') {
+  function bookingStatus(booking) {
+    if (booking.status !== 'active') {
+      return h('div', { class: 'row-sub text-danger' }, booking.cancelled_by === 'client' ? 'Отменена клиентом' : 'Отменена мастером');
+    }
+    if (booking.phase === 'ongoing') return h('div', { class: 'row-sub text-accent' }, 'Идёт сейчас');
+    if (booking.phase === 'finished') return h('div', { class: 'row-sub text-success' }, 'Завершена');
+    return null;
+  }
+
+  function bookingRow(booking) {
     const cancelled = booking.status !== 'active';
     const username = booking.username
       ? h(
@@ -206,11 +229,11 @@
           username,
           h('span', null, fmt.price(booking.total_price))
         ),
-        cancelled
-          ? h('div', { class: 'row-sub text-danger' }, booking.cancelled_by === 'client' ? 'Отменена клиентом' : 'Отменена мастером')
-          : null
+        booking.comment ? h('div', { class: 'booking-comment' }, booking.comment) : null,
+        bookingStatus(booking)
       ),
-      !cancelled && canCancel
+      // Прошедшую запись не отменить: клиенту пришло бы «запись отменена» после визита
+      !cancelled && booking.phase !== 'finished'
         ? h('button', { class: 'link-button danger', type: 'button', onClick: () => cancelBooking(booking) }, 'Отменить')
         : null
     );
@@ -263,36 +286,42 @@
         placeholder('Услуг пока нет. Добавьте первую — клиенты сразу увидят её в приложении.'),
       ];
     }
+    const groups = groupServices(state.services);
+    const grouped = groups.some(([name]) => name);
     return [
+      groups.map(([name, items]) => [
+        grouped ? h('div', { class: 'section-title' }, name || 'Без группы') : null,
+        h('div', { class: cls('card', !grouped && 'mt') }, items.map(serviceRow)),
+      ]),
+      h(
+        'p',
+        { class: 'section-note' },
+        'Скрытые услуги не видны клиентам, но остаются в старых записях.' +
+          (grouped ? '' : ' Чтобы разделить услуги, например, на маникюр и педикюр, укажите у них группу.')
+      ),
+    ];
+  }
+
+  function serviceRow(service) {
+    return h(
+      'button',
+      { class: cls('row', !service.is_active && 'cancelled'), type: 'button', onClick: () => openForm(service) },
       h(
         'div',
-        { class: 'card mt' },
-        state.services.map((service) =>
-          h(
-            'button',
-            { class: cls('row', !service.is_active && 'cancelled'), type: 'button', onClick: () => openForm(service) },
-            h(
-              'div',
-              { class: 'row-main' },
-              h(
-                'div',
-                { class: 'row-title' },
-                service.name,
-                service.is_active ? null : h('span', { class: 'badge' }, 'скрыта')
-              ),
-              h(
-                'div',
-                { class: 'row-sub' },
-                [fmt.duration(service.duration_min), service.description].filter(Boolean).join(' · ')
-              )
-            ),
-            h('span', { class: 'row-value' }, fmt.price(service.price)),
-            h('span', { class: 'row-value hint' }, '›')
-          )
-        )
+        { class: 'row-main' },
+        h('div', { class: 'row-title' }, service.name, service.is_active ? null : h('span', { class: 'badge' }, 'скрыта')),
+        h('div', { class: 'row-sub' }, [fmt.duration(service.duration_min), service.description].filter(Boolean).join(' · '))
       ),
-      h('p', { class: 'section-note' }, 'Скрытые услуги не видны клиентам, но остаются в старых записях.'),
-    ];
+      h('span', { class: 'row-value' }, fmt.price(service.price)),
+      h('span', { class: 'row-value hint' }, '›')
+    );
+  }
+
+  // Группы, которые уже есть у услуг, — чтобы не набирать название заново
+  function serviceCategories() {
+    return groupServices(state.services || [])
+      .map(([name]) => name)
+      .filter(Boolean);
   }
 
   async function loadServices() {
@@ -308,7 +337,7 @@
   function openForm(service) {
     state.form = service
       ? { ...service, price: String(service.price) }
-      : { id: null, name: '', description: '', price: '', duration_min: 60, is_active: true, sort_order: 0 };
+      : { id: null, name: '', description: '', category: '', price: '', duration_min: 60, is_active: true, sort_order: 0 };
     state.view = 'service-form';
     render(true);
   }
@@ -345,6 +374,24 @@
             value: form.name,
             onInput: bind('name'),
           })
+        ),
+        // div, а не label: кнопки групп внутри label отдавали бы нажатие полю ввода
+        h(
+          'div',
+          { class: 'field' },
+          h('label', { class: 'field-label', for: 'svc-category' }, 'Группа (необязательно)'),
+          h('input', {
+            class: 'input',
+            id: 'svc-category',
+            maxlength: '50',
+            placeholder: 'Например, маникюр',
+            value: form.category,
+            onInput: (e) => {
+              form.category = e.target.value;
+              markCategoryChips();
+            },
+          }),
+          categoryChips()
         ),
         h(
           'label',
@@ -415,6 +462,47 @@
     ];
   }
 
+  function sameCategory(a, b) {
+    const norm = (s) => s.split(/\s+/).filter(Boolean).join(' ').toLowerCase();
+    return norm(a) === norm(b);
+  }
+
+  function categoryChips() {
+    const categories = serviceCategories();
+    if (!categories.length) return null;
+    return h(
+      'div',
+      { class: 'chips', role: 'group', 'aria-label': 'Группы услуг' },
+      categories.map((name) =>
+        h(
+          'button',
+          {
+            class: cls('chip', sameCategory(name, state.form.category) && 'active'),
+            type: 'button',
+            'data-category': name,
+            'aria-pressed': String(sameCategory(name, state.form.category)),
+            onClick: () => {
+              haptic.select();
+              // Повторное нажатие на выбранную группу убирает услугу из неё
+              state.form.category = sameCategory(name, state.form.category) ? '' : name;
+              document.getElementById('svc-category').value = state.form.category;
+              markCategoryChips();
+            },
+          },
+          name
+        )
+      )
+    );
+  }
+
+  function markCategoryChips() {
+    for (const chip of document.querySelectorAll('.chip[data-category]')) {
+      const active = sameCategory(chip.dataset.category, state.form.category);
+      chip.classList.toggle('active', active);
+      chip.setAttribute('aria-pressed', String(active));
+    }
+  }
+
   function formError(message) {
     const el = document.getElementById('form-error');
     el.textContent = message;
@@ -434,6 +522,7 @@
     const body = {
       name: form.name.trim(),
       description: form.description.trim(),
+      category: form.category.trim(),
       price,
       duration_min: form.duration_min,
       is_active: form.is_active,
@@ -525,7 +614,12 @@
         h(
           'button',
           { class: 'row', type: 'button', onClick: openRules },
-          h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, rulesSummary(state.schedule))),
+          h(
+            'div',
+            { class: 'row-main' },
+            h('div', { class: 'row-title' }, rulesSummary(state.schedule)),
+            h('div', { class: 'row-sub' }, `Часовой пояс: ${zoneLabel(state.schedule.timezone)}`)
+          ),
           h('span', { class: 'row-value hint' }, '›')
         )
       ),
@@ -858,12 +952,12 @@
     if (!groups.length) {
       return [title, placeholder(state.picked.length === 1 ? 'На этот день записей нет' : 'На выбранные дни записей нет')];
     }
-    if (state.picked.length === 1) return [title, h('div', { class: 'card' }, groups[0][1].map((b) => bookingRow(b, true)))];
+    if (state.picked.length === 1) return [title, h('div', { class: 'card' }, groups[0][1].map((b) => bookingRow(b)))];
     return [
       title,
       groups.map(([date, items]) => [
         h('div', { class: 'date-header' }, fmt.relativeDate(date)),
-        h('div', { class: 'card' }, items.map((b) => bookingRow(b, true))),
+        h('div', { class: 'card' }, items.map((b) => bookingRow(b))),
       ]),
     ];
   }
@@ -1025,7 +1119,43 @@
         })
       ),
       h('p', { class: 'section-note' }, 'Дни дальше этого срока клиенты пока не видят, даже если они рабочие в календаре.'),
+
+      h('div', { class: 'section-title' }, 'Ваше время'),
+      h(
+        'div',
+        { class: 'card' },
+        picker({
+          id: 'timezone',
+          label: 'Часовой пояс',
+          value: rules.timezone,
+          options: TIMEZONES.some(([zone]) => zone === rules.timezone) ? TIMEZONES : [...TIMEZONES, [rules.timezone, rules.timezone]],
+          onChange: (zone) => {
+            rules.timezone = zone;
+            render();
+          },
+        })
+      ),
+      h('p', { class: 'section-note' }, zoneNote(rules.timezone)),
     ];
+  }
+
+  function zoneLabel(zone) {
+    const known = TIMEZONES.find(([key]) => key === zone);
+    return known ? known[1] : zone;
+  }
+
+  // Часы в выбранном поясе — чтобы сразу было видно, тот ли пояс выбран
+  function zoneNote(zone) {
+    let clock = '';
+    try {
+      clock = new Date().toLocaleTimeString('ru-RU', { timeZone: zone, hour: '2-digit', minute: '2-digit' });
+    } catch (e) {
+      // браузер не знает пояс — просто не покажем время
+    }
+    return (
+      (clock ? `Сейчас по этому поясу ${clock}. ` : '') +
+      'По нему бот понимает, какие записи уже прошли и с какого времени сегодня ещё можно записаться.'
+    );
   }
 
   function slotExample(step) {
@@ -1045,6 +1175,7 @@
     if (state.saving) return;
     state.saving = true;
     mainButton.progress(true);
+    const zoneChanged = state.rules.timezone !== state.schedule.timezone;
     let saved = false;
     try {
       state.schedule = await api('api/admin/schedule', { method: 'PUT', body: state.rules });
@@ -1059,6 +1190,8 @@
       haptic.success();
       toast('Правила записи сохранены');
       closeRules();
+      // В другом поясе может наступить другое «сегодня», а часть записей — уже пройти
+      if (zoneChanged) loadSchedule();
     }
   }
 

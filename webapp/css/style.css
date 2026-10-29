@@ -345,6 +345,14 @@ button.row:active {
   color: var(--destructive);
 }
 
+.text-accent {
+  color: var(--accent-fg);
+}
+
+.text-success {
+  color: var(--success);
+}
+
 /* ---------- календарь ---------- */
 
 .calendar {
@@ -635,6 +643,28 @@ button.row:active {
 textarea.input {
   resize: vertical;
   min-height: 60px;
+}
+
+/* Кнопки-подсказки под полем: уже заведённые группы услуг */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chip {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.chip.active {
+  background: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Поле-кнопка выпадающего списка (App.picker) */
@@ -930,6 +960,21 @@ textarea.input {
   gap: 4px 14px;
   margin-top: 6px;
   font-size: 14px;
+}
+
+/* Пожелания клиента к записи */
+.comment-row .row-title {
+  white-space: pre-line;
+}
+
+.booking-comment {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 14px;
+  white-space: pre-line;
+  word-break: break-word;
 }
 
 .cancelled {

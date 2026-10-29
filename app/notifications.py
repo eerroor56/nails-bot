@@ -56,13 +56,16 @@ def client_link(booking: dict[str, Any]) -> str:
 
 
 def master_new_booking_text(booking: dict[str, Any], currency: str) -> str:
-    return (
+    text = (
         "<b>Новая запись!</b>\n"
         f"Клиент: {client_link(booking)} / {escape(booking['phone'])}\n"
         f"Услуга: {services_list(booking)}\n"
         f"Дата и время: {human_slot(booking, with_end=True)}\n"
         f"Сумма: {human_price(booking['total_price'], currency)}"
     )
+    if booking.get("comment"):
+        text += f"\nПожелания: {escape(booking['comment'])}"
+    return text
 
 
 def client_booking_text(booking: dict[str, Any], currency: str) -> str:

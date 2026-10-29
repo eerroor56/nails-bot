@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const { tg, inTelegram, versionAtLeast, h, cls, api, mainButton, backButton, alertBox, confirmBox, haptic, toast, fmt } =
+  const { tg, inTelegram, versionAtLeast, h, cls, api, mainButton, backButton, alertBox, confirmBox, haptic, toast, fmt, groupServices } =
     window.App;
   const root = document.getElementById('app');
 
@@ -21,6 +21,7 @@
     time: null,
     name: '',
     phone: '',
+    comment: '', // пожелания к записи
     bookings: [],
     lastBooking: null,
     submitting: false,
@@ -202,6 +203,16 @@
     );
   }
 
+  function serviceGroups() {
+    const groups = groupServices(state.services);
+    // Пока мастер не завёл групп — одним списком, без заголовков
+    if (!groups.some(([name]) => name)) return h('div', { class: 'card' }, state.services.map(serviceRow));
+    return groups.map(([name, items]) => [
+      h('div', { class: 'section-title' }, name || 'Другое'),
+      h('div', { class: 'card' }, items.map(serviceRow)),
+    ]);
+  }
+
   function screenServices() {
     const count = state.selected.length;
     const sum = totals();
@@ -210,7 +221,7 @@
       steps(1),
       title('Выберите услуги', 'Можно отметить несколько — время рассчитаем автоматически'),
       state.services.length
-        ? h('div', { class: 'card' }, state.services.map(serviceRow))
+        ? serviceGroups()
         : h('div', { class: 'card' }, h('div', { class: 'placeholder' }, 'Мастер ещё не добавил услуги. Загляните чуть позже 🙏')),
       count
         ? h(
@@ -392,15 +403,24 @@
       autocomplete: 'tel',
       maxlength: '20',
       placeholder: '+7 999 123-45-67',
-      enterkeyhint: 'done',
+      enterkeyhint: 'next',
       value: state.phone,
       onInput: (e) => {
         state.phone = e.target.value;
         showContactsError('');
       },
       onKeydown: (e) => {
-        if (e.key === 'Enter') submitContacts();
+        if (e.key === 'Enter') document.getElementById('comment').focus();
       },
+    });
+    const commentInput = h('textarea', {
+      class: 'input',
+      id: 'comment',
+      rows: '3',
+      maxlength: '500',
+      placeholder: 'Например, какой дизайн хотите или что мастеру важно знать',
+      value: state.comment,
+      onInput: (e) => (state.comment = e.target.value),
     });
     return screen(
       steps(3),
@@ -414,7 +434,12 @@
       canShare
         ? h('button', { class: 'btn secondary mt', type: 'button', onClick: requestPhone }, '📱 Взять номер из Telegram')
         : null,
-      h('div', { class: 'error-text', id: 'contacts-error', role: 'alert', hidden: true })
+      h('div', { class: 'error-text', id: 'contacts-error', role: 'alert', hidden: true }),
+      h(
+        'div',
+        { class: 'card mt' },
+        h('label', { class: 'field', for: 'comment' }, h('span', { class: 'field-label' }, 'Пожелания (необязательно)'), commentInput)
+      )
     );
   }
 
@@ -456,7 +481,13 @@
         infoRow('Время', `${state.time} – ${fmt.addMinutes(state.time, sum.duration)} (${fmt.duration(sum.duration)})`)
       ),
       h('div', { class: 'section-title' }, 'Контакты'),
-      h('div', { class: 'card' }, infoRow('Имя', state.name.trim()), infoRow('Телефон', state.phone.trim())),
+      h(
+        'div',
+        { class: 'card' },
+        infoRow('Имя', state.name.trim()),
+        infoRow('Телефон', state.phone.trim()),
+        state.comment.trim() ? infoRow('Пожелания', state.comment.trim(), 'comment-row') : null
+      ),
       h('p', { class: 'section-note' }, 'После подтверждения бот пришлёт сообщение с деталями записи.')
     );
   }
@@ -652,11 +683,13 @@
           time: state.time,
           client_name: state.name.trim(),
           phone: state.phone.trim(),
+          comment: state.comment.trim(),
         },
       });
       haptic.success();
       state.lastBooking = booking;
       state.phone = booking.phone;
+      state.comment = '';
       state.selected = [];
       resetDateTime();
       state.bookings = await api('api/bookings/my').catch(() => [...state.bookings, booking]);

@@ -82,6 +82,43 @@ async def test_old_default_week_when_schedule_never_saved(tmp_path):
         await db.close()
 
 
+async def test_new_columns_added_to_old_tables(tmp_path):
+    path = tmp_path / "old.db"
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "CREATE TABLE services (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
+            "description TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL, duration_min INTEGER NOT NULL, "
+            "is_active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        await conn.execute("INSERT INTO services(name, price, duration_min) VALUES ('Маникюр', 2000, 60)")
+        await conn.execute(
+            "CREATE TABLE bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, "
+            "username TEXT NOT NULL DEFAULT '', client_name TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, "
+            "start_min INTEGER NOT NULL, end_min INTEGER NOT NULL, total_price INTEGER NOT NULL, "
+            "status TEXT NOT NULL DEFAULT 'active', cancelled_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        await conn.execute(
+            "INSERT INTO bookings(user_id, client_name, phone, date, start_min, end_min, total_price) "
+            "VALUES (1, 'Анна', '+79990000000', '2026-10-01', 600, 660, 2000)"
+        )
+        await conn.commit()
+
+    db = Database(path)
+    await db.connect()
+    try:
+        services = await db.list_services()
+        assert services[0]["category"] == ""
+        assert (await db.get_booking(1))["comment"] == ""
+        booking_id = await db.create_booking(
+            user_id=1, username="", client_name="Анна", phone="+79990000000", day=date(2026, 11, 2),
+            start_min=600, services=services, comment="Без спешки",
+        )
+        assert (await db.get_booking(booking_id))["comment"] == "Без спешки"
+    finally:
+        await db.close()
+
+
 async def test_new_install_has_no_work_days(tmp_path):
     db = Database(tmp_path / "new.db")
     await db.connect()
